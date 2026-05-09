@@ -70,7 +70,7 @@ TASK_RESULT_END = "<<<END_UNTRUSTED_CHILD_RESULT>>>"
 WORK_COMMUTE_DESTINATION = "Work destination"
 WORK_COMMUTE_DEFAULT_ORIGIN = "Current location"
 BACKGROUND_RESEARCH_TIMEOUT_S = 180
-FOREGROUND_STANDBY_AFTER_S = 10
+FOREGROUND_STANDBY_AFTER_S = 15
 VOICE_RESULT_NORMAL_MAX_CHARS = 1500
 VOICE_RESULT_NORMAL_MAX_SENTENCES = 10
 VOICE_RESULT_DEEP_MAX_CHARS = 3000
@@ -741,6 +741,43 @@ def detect_voice_intents(text: str) -> set[str]:
     return intents
 
 
+def should_delay_email_copy_request(text: str, *, has_background_work: bool = False) -> bool:
+    """True when an email-copy request should wait for a delayed/background answer."""
+    lower = text.lower()
+    delayed_markers = (
+        "when done",
+        "when it's done",
+        "when its done",
+        "when finished",
+        "when ready",
+        "when complete",
+        "when completed",
+        "once done",
+        "once finished",
+        "as soon as",
+        "after it finishes",
+        "after it is finished",
+        "after it's finished",
+    )
+    return has_background_work or any(marker in lower for marker in delayed_markers)
+
+
+def extract_compound_email_task_text(text: str) -> Optional[str]:
+    """Return the task part from "do X and email it when done" style requests."""
+    match = re.search(
+        r"\b(?:and|then|also)?\s*(?:send|email|mail|forward)\b.{0,80}\b(?:email|gmail|inbox|mailbox)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match or match.start() < 8:
+        return None
+
+    task_text = re.sub(r"\s+(?:and|then|also)\s*$", "", text[: match.start()].strip(), flags=re.IGNORECASE)
+    if len(task_text.split()) < 3:
+        return None
+    return task_text
+
+
 def is_send_copy_to_email_request(text: str) -> bool:
     """Return true for explicit voice follow-ups asking to email the prior answer."""
     lower = text.lower()
@@ -806,8 +843,12 @@ def build_email_copy_body(final_texts: list[str]) -> str:
         return ""
 
     body_lines = ["Hello,", "", "Here is the summary you requested:", ""]
-    for index, item in enumerate(usable[-6:], start=1):
-        body_lines.append(f"{index}. {item}")
+    items = usable[-6:]
+    if len(items) == 1:
+        body_lines.append(items[0])
+    else:
+        for index, item in enumerate(items, start=1):
+            body_lines.append(f"{index}. {item}")
     body_lines.extend(["", "Best,", "Assistant"])
     return "\n".join(body_lines)
 
@@ -1423,6 +1464,45 @@ async def websocket_endpoint(websocket: WebSocket):
         background_research_tasks.add(task)
         task.add_done_callback(lambda finished: background_research_tasks.discard(finished))
 
+    async def deliver_background_failure(message: str, *, source_offset: Optional[int] = None) -> None:
+        """Tell the client a background turn failed and clear pending delivery state."""
+        nonlocal pending_email_copy_request, last_spoken_answer
+        display_text = clean_for_display(message).strip()
+        if not display_text:
+            return
+
+        pending_email_copy_request = None
+        last_spoken_answer = display_text
+        await persist_delivery_state(session_offset=source_offset)
+
+        await websocket.send_json({"type": "background_task_finished"})
+        await websocket.send_json({"type": "assistant_turn_start"})
+        await websocket.send_json({
+            "type": "response_chunk",
+            "text": display_text,
+        })
+
+        seq = 0
+        for chunk in split_text_for_tts(display_text):
+            aac_bytes = await tts.synthesize_aac(chunk)
+            if not aac_bytes:
+                continue
+            audio_b64 = base64.b64encode(aac_bytes).decode()
+            await websocket.send_json({
+                "type": "audio_aac",
+                "data": audio_b64,
+                "seq": seq,
+                "mime": getattr(tts, "mime_type", "audio/aac"),
+            })
+            seq += 1
+
+        await asyncio.sleep(0.5)
+        await websocket.send_json({
+            "type": "response_complete",
+            "text": display_text,
+        })
+        logger.info(f"Delivered background failure: {display_text[:100]}...")
+
     async def run_background_research(transcript: str) -> None:
         """Continue a long voice research turn off the live request path.
 
@@ -1441,12 +1521,20 @@ async def websocket_endpoint(websocket: WebSocket):
             )
         except asyncio.TimeoutError:
             logger.warning(
-                "Background voice research exceeded {}s; keeping pending state and waiting for any later session final.",
+                "Background voice research exceeded {}; clearing pending state.",
                 BACKGROUND_RESEARCH_TIMEOUT_S,
+            )
+            await deliver_background_failure(
+                "I couldn't finish that background research in time. Please try again with a narrower request.",
+                source_offset=session_offset,
             )
             return
         except Exception as e:
             logger.error(f"Background voice research failed: {e}")
+            await deliver_background_failure(
+                "I couldn't finish that background research cleanly. Please try again in a minute.",
+                source_offset=session_offset,
+            )
             return
 
         if session_path is None:
@@ -1457,7 +1545,11 @@ async def websocket_endpoint(websocket: WebSocket):
 
         if is_placeholder_gateway_response(response_text):
             logger.info(
-                "Background voice research is still pending; suppressing placeholder gateway response."
+                "Background voice research returned placeholder; clearing pending state."
+            )
+            await deliver_background_failure(
+                "I couldn't get a finished background answer for that. Please try again with a narrower request.",
+                source_offset=session_offset,
             )
             return
 
@@ -1476,7 +1568,11 @@ async def websocket_endpoint(websocket: WebSocket):
             return
 
         logger.warning(
-            "Background voice research returned no clean final; keeping pending state."
+            "Background voice research returned no clean final; clearing pending state."
+        )
+        await deliver_background_failure(
+            "I couldn't get a clean background answer for that. Please try again with a narrower request.",
+            source_offset=session_offset,
         )
 
     async def process_transcript(transcript: str, *, echo_transcript: bool = True):
@@ -1489,6 +1585,12 @@ async def websocket_endpoint(websocket: WebSocket):
         intents = detect_voice_intents(transcript)
         wants_email_copy = "email_copy" in intents
         wants_background_research = "background_research" in intents
+        routed_transcript = transcript
+        compound_email_task = extract_compound_email_task_text(transcript)
+        if compound_email_task:
+            routed_transcript = compound_email_task
+            routed_intents = detect_voice_intents(routed_transcript)
+            wants_background_research = "background_research" in routed_intents
 
         if echo_transcript:
             await websocket.send_json({
@@ -1527,6 +1629,7 @@ async def websocket_endpoint(websocket: WebSocket):
         SENTENCE_ENDS = [". ", "! ", "? ", ".\n", "!\n", "?\n"]
         full_response = ""
         sentence_buffer = ""
+        foreground_standby_started = False
 
         # The OpenClaw orchestrator publishes a strict tagged-reasoning contract
         # (system-prompt-BIKbdIsV.js): only text inside <final>...</final> is
@@ -1567,16 +1670,30 @@ async def websocket_endpoint(websocket: WebSocket):
                 sentence_buffer = ""
                 await tts_queue.put(stripped_tail)
 
+        if wants_email_copy and compound_email_task:
+            session_path, session_offset = await snapshot_session_offset(session_owner_key)
+            pending_email_copy_request = _make_pending_email_copy_request(
+                to_address=load_primary_email_address(),
+                min_session_offset=session_offset,
+                require_delayed=wants_background_research or bool(background_research_tasks),
+            )
+            await persist_delivery_state(session_offset=session_offset)
+            wants_email_copy = False
+
         if wants_email_copy:
             session_path, session_offset = await snapshot_session_offset(session_owner_key)
+            delay_email_copy = should_delay_email_copy_request(
+                transcript,
+                has_background_work=bool(background_research_tasks),
+            )
             recent_finals = await read_recent_assistant_final_texts(
                 session_path,
                 before_offset=session_offset,
             )
-            candidate = _pick_recent_copy_candidate(recent_finals)
+            candidate = "" if delay_email_copy else _pick_recent_copy_candidate(recent_finals)
             # Fall back to the in-memory last spoken answer (survives reconnects
             # because it's also stored in the delivery state).
-            if not candidate and last_spoken_answer:
+            if not candidate and last_spoken_answer and not delay_email_copy:
                 candidate = _pick_recent_copy_candidate([last_spoken_answer])
             if candidate:
                 body = build_email_copy_body([candidate]) or candidate
@@ -1595,22 +1712,25 @@ async def websocket_endpoint(websocket: WebSocket):
                 pending_email_copy_request = _make_pending_email_copy_request(
                     to_address=load_primary_email_address(),
                     min_session_offset=session_offset,
-                    require_delayed=False,
+                    require_delayed=delay_email_copy,
                 )
                 await persist_delivery_state(session_offset=session_offset)
-                await emit_filtered(
-                    "I do not have a finished answer to copy yet. I queued it and will send it as soon as that answer is ready."
+                queued_message = (
+                    "I queued it and will send it when the background answer is ready."
+                    if delay_email_copy
+                    else "I do not have a finished answer to copy yet. I queued it and will send it as soon as that answer is ready."
                 )
+                await emit_filtered(queued_message)
             raw_stream_chars = len(full_response)
         elif is_orchestrator_backend and wants_background_research:
             await websocket.send_json({"type": "background_task_started"})
             await emit_filtered(
                 "Working on it, I'll respond when finished."
             )
-            background_task = asyncio.create_task(run_background_research(transcript))
+            background_task = asyncio.create_task(run_background_research(routed_transcript))
             track_background_task(background_task)
         else:
-            commute_response = await resolve_work_commute_response(transcript)
+            commute_response = await resolve_work_commute_response(routed_transcript)
             if commute_response:
                 await emit_filtered(commute_response)
                 raw_stream_chars = len(commute_response)
@@ -1635,7 +1755,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     session_owner_key
                 )
                 response_task = asyncio.create_task(
-                    backend.chat(transcript, user_key=session_id)
+                    backend.chat(routed_transcript, user_key=session_id)
                 )
                 try:
                     response_text = await asyncio.wait_for(
@@ -1647,6 +1767,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         "Gateway voice turn exceeded {}s; keeping request alive and sending standby.",
                         FOREGROUND_STANDBY_AFTER_S,
                     )
+                    foreground_standby_started = True
                     await websocket.send_json({"type": "background_task_started"})
                     await emit_filtered("Working on it, I'll respond when finished.")
                     try:
@@ -1691,7 +1812,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 )
 
                 if spoken:
-                    await websocket.send_json({"type": "background_task_finished"})
+                    if foreground_standby_started:
+                        await websocket.send_json({"type": "background_task_finished"})
                     await emit_filtered(clean_for_display(spoken))
                 elif is_placeholder_gateway_response(response_text):
                     logger.info(
@@ -1709,7 +1831,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     # the strict-final sanitizer here — strict mode would
                     # drop everything when no <final> tag is present and
                     # produce silent dead-air.
-                    await websocket.send_json({"type": "background_task_finished"})
+                    if foreground_standby_started:
+                        await websocket.send_json({"type": "background_task_finished"})
                     await emit_filtered(clean_for_display(response_text))
                 else:
                     # Either the response was empty, or the gateway handed
