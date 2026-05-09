@@ -9,6 +9,31 @@ Talk to your AI like you talk to Alexa — but self-hosted, private, and connect
 
 🌐 **Website:** [openclawvoice.com](https://openclawvoice.com)
 
+## What's Different In This Branch
+
+This branch focuses on OpenClaw reliability and voice UX hardening. It is usable
+as a standalone public fork even before any upstream merge.
+
+- **Final-only output guard** in OpenClaw mode to prevent reasoning leakage into spoken responses.
+- **Durable delayed delivery** for long-running tasks (reconnect-safe delivery state + outbox replay).
+- **Reconnect-safe email copy flow** so "send a copy to my email" can complete after delayed results.
+- **Voice UI improvements** for background task states, continuous mode behavior, and push-to-talk/tap interactions.
+- **Environment path overrides** for running outside a default local OpenClaw filesystem layout.
+
+### Fork At A Glance
+
+| Area | Upstream `main` | This branch |
+|------|------------------|-------------|
+| OpenClaw stream handling | Standard stream handling | Strict final-only filtering for `openclaw:*` models |
+| Long-running task delivery | Best-effort within active session | Durable delivery-state + outbox replay across reconnects |
+| "Send a copy to my email" | Basic flow | Reconnect-safe queued fulfillment when final answer is delayed |
+| Voice interaction UX | Baseline push-to-talk/continuous controls | Refined hold/tap behavior + clearer background/thinking statuses |
+| OpenClaw filesystem assumptions | Default paths | Environment-overridable OpenClaw state/workspace paths |
+
+If you are evaluating this fork, prioritize the OpenClaw-mode notes in:
+- `docs/voice-output-sanitization.md`
+- `README.md` sections on reconnect semantics and environment variables
+
 ## Features
 
 | Feature | Description |
@@ -66,27 +91,37 @@ PYTHONPATH=. ELEVENLABS_API_KEY="$ELEVENLABS_API_KEY" OPENAI_API_KEY="$OPENAI_AP
 
 ### Environment Variables
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `ELEVENLABS_API_KEY` | Yes* | — | ElevenLabs API key for TTS |
-| `OPENAI_API_KEY` | Yes* | — | OpenAI API key (if not using gateway) |
-| `OPENCLAW_GATEWAY_URL` | No | — | OpenClaw gateway URL for full agent |
+#### Core
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `ELEVENLABS_API_KEY` | Yes* | — | ElevenLabs TTS API key |
+| `OPENAI_API_KEY` | Yes* | — | OpenAI key (when not using gateway) |
+| `OPENCLAW_GATEWAY_URL` | No | — | OpenClaw gateway URL |
 | `OPENCLAW_GATEWAY_TOKEN` | No | — | Gateway auth token |
-| `OPENCLAW_GATEWAY_AGENT_ID` | No | `main` | Gateway agent id used for chat requests |
+| `OPENCLAW_GATEWAY_AGENT_ID` | No | `main` | Gateway agent id |
 | `OPENCLAW_PORT` | No | `8765` | Server port |
 | `OPENCLAW_STT_MODEL` | No | `base` | Whisper model size |
-| `OPENCLAW_STT_DEVICE` | No | `auto` | Device: `auto`, `cpu`, `cuda`, `mps` |
+| `OPENCLAW_STT_DEVICE` | No | `auto` | `auto` / `cpu` / `cuda` / `mps` |
 | `OPENCLAW_REQUIRE_AUTH` | No | `false` | Require API keys for clients |
-| `OPENCLAW_WORKSPACE_ROOT` | No | auto-detected | Root path for OpenClaw workspace lookups |
-| `OPENCLAW_AGENTS_CONFIG` | No | `<workspace>/config/agents.json` | Agent config path for email routing metadata |
-| `OPENCLAW_USER_PROFILE` | No | `<workspace>/USER.md` | User profile file used for destination hints |
-| `OPENCLAW_AGENTMAIL_SEND_SCRIPT` | No | `<workspace>/skills/agentmail/scripts/send_email.py` | Script used for "send a copy to my email" |
-| `OPENCLAW_TASK_RUNS_DB` | No | `~/.openclaw/tasks/runs.sqlite` | Task database for background job polling |
-| `OPENCLAW_SESSIONS_STATE` | No | `~/.openclaw/agents/main/sessions/sessions.json` | Session map used to locate JSONL output |
-| `OPENCLAW_VOICE_DELIVERY_DIR` | No | `~/.openclaw/voice/delivery-state` | Per-session delivery state (offsets + pending email copy) |
-| `OPENCLAW_VOICE_OUTBOX_DIR` | No | `~/.openclaw/voice/outbox` | Durable queue for delayed voice result replay |
 
 *One of `OPENAI_API_KEY` or `OPENCLAW_GATEWAY_URL` required.
+
+<details>
+<summary>Advanced OpenClaw path overrides (optional)</summary>
+
+Use these only if your OpenClaw files are not in default locations.
+
+- `OPENCLAW_WORKSPACE_ROOT` (default: auto-detected)
+- `OPENCLAW_AGENTS_CONFIG` (default: `<workspace>/config/agents.json`)
+- `OPENCLAW_USER_PROFILE` (default: `<workspace>/USER.md`)
+- `OPENCLAW_AGENTMAIL_SEND_SCRIPT` (default: `<workspace>/skills/agentmail/scripts/send_email.py`)
+- `OPENCLAW_TASK_RUNS_DB` (default: `~/.openclaw/tasks/runs.sqlite`)
+- `OPENCLAW_SESSIONS_STATE` (default: `~/.openclaw/agents/main/sessions/sessions.json`)
+- `OPENCLAW_VOICE_DELIVERY_DIR` (default: `~/.openclaw/voice/delivery-state`)
+- `OPENCLAW_VOICE_OUTBOX_DIR` (default: `~/.openclaw/voice/outbox`)
+
+</details>
 
 ### Whisper Model Sizes
 
