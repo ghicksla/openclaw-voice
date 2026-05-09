@@ -18,6 +18,8 @@ Talk to your AI like you talk to Alexa — but self-hosted, private, and connect
 | 🎯 **Voice Activity Detection** | Silero VAD filters background noise. Works in noisy environments. |
 | 🧹 **Smart Text Cleaning** | Strips markdown, hashtags, URLs before TTS. No more "hash hash". |
 | 🔌 **Any AI Backend** | OpenAI, Claude, or full OpenClaw agent with memory and tools. |
+| 🛡️ **Tagged-Final Output Guard** | In OpenClaw mode, streams only `<final>...</final>` content to prevent reasoning leaks. |
+| 📬 **Durable Follow-up Delivery** | Persists pending background results and "send a copy to my email" requests across reconnects. |
 | 🌐 **Browser-Based** | No app install. Works on desktop and mobile. |
 | 🚗 **Continuous Mode** | Hands-free conversation. Auto-listens after each response. |
 
@@ -70,10 +72,19 @@ PYTHONPATH=. ELEVENLABS_API_KEY="$ELEVENLABS_API_KEY" OPENAI_API_KEY="$OPENAI_AP
 | `OPENAI_API_KEY` | Yes* | — | OpenAI API key (if not using gateway) |
 | `OPENCLAW_GATEWAY_URL` | No | — | OpenClaw gateway URL for full agent |
 | `OPENCLAW_GATEWAY_TOKEN` | No | — | Gateway auth token |
+| `OPENCLAW_GATEWAY_AGENT_ID` | No | `main` | Gateway agent id used for chat requests |
 | `OPENCLAW_PORT` | No | `8765` | Server port |
 | `OPENCLAW_STT_MODEL` | No | `base` | Whisper model size |
 | `OPENCLAW_STT_DEVICE` | No | `auto` | Device: `auto`, `cpu`, `cuda`, `mps` |
 | `OPENCLAW_REQUIRE_AUTH` | No | `false` | Require API keys for clients |
+| `OPENCLAW_WORKSPACE_ROOT` | No | auto-detected | Root path for OpenClaw workspace lookups |
+| `OPENCLAW_AGENTS_CONFIG` | No | `<workspace>/config/agents.json` | Agent config path for email routing metadata |
+| `OPENCLAW_USER_PROFILE` | No | `<workspace>/USER.md` | User profile file used for destination hints |
+| `OPENCLAW_AGENTMAIL_SEND_SCRIPT` | No | `<workspace>/skills/agentmail/scripts/send_email.py` | Script used for "send a copy to my email" |
+| `OPENCLAW_TASK_RUNS_DB` | No | `~/.openclaw/tasks/runs.sqlite` | Task database for background job polling |
+| `OPENCLAW_SESSIONS_STATE` | No | `~/.openclaw/agents/main/sessions/sessions.json` | Session map used to locate JSONL output |
+| `OPENCLAW_VOICE_DELIVERY_DIR` | No | `~/.openclaw/voice/delivery-state` | Per-session delivery state (offsets + pending email copy) |
+| `OPENCLAW_VOICE_OUTBOX_DIR` | No | `~/.openclaw/voice/outbox` | Durable queue for delayed voice result replay |
 
 *One of `OPENAI_API_KEY` or `OPENCLAW_GATEWAY_URL` required.
 
@@ -131,6 +142,26 @@ Add to your `openclaw.json`:
   }
 }
 ```
+
+### Background Results and Reconnect Semantics (OpenClaw mode)
+
+When OpenClaw tasks run longer than a foreground voice turn, the server sends an
+immediate acknowledgement and tracks completion asynchronously. To keep delivery
+reliable across websocket disconnects/reconnects, two local stores are used:
+
+- `OPENCLAW_VOICE_DELIVERY_DIR`: per-session JSON state for offsets, pending email-copy requests, and last spoken answer.
+- `OPENCLAW_VOICE_OUTBOX_DIR`: queued completed results that could not be spoken yet and must replay later.
+
+On reconnect, queued results are replayed first, then normal announce polling resumes.
+This makes delayed task responses and follow-up commands like "send a copy to my email"
+robust even when the browser reconnects.
+
+### Tagged-Final Sanitization (OpenClaw mode)
+
+For OpenClaw orchestrator backends (`openclaw:*` models), streamed output is filtered
+in strict mode so only text inside `<final>...</final>` is emitted to UI/TTS. This
+prevents internal reasoning/tool-planning text from leaking into spoken responses.
+See [`docs/voice-output-sanitization.md`](docs/voice-output-sanitization.md) for details.
 
 ## Architecture
 
@@ -200,6 +231,9 @@ Connect to `ws://localhost:8765/ws`:
 { "type": "response_chunk", "text": "..." }        // Streaming text
 { "type": "audio_chunk", "data": "...", "sample_rate": 24000 }  // Streaming audio
 { "type": "response_complete", "text": "..." }     // Full response
+{ "type": "background_task_started" }              // Deferred task accepted
+{ "type": "background_task_finished" }             // Deferred task result delivered
+{ "type": "assistant_turn_start" }                 // Resume normal listening flow
 { "type": "vad_status", "speech_detected": true }  // VAD feedback
 ```
 
