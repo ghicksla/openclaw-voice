@@ -332,7 +332,7 @@ function setBackgroundTaskPending(value) {
     persistBackgroundPending();
 }
 function renderBackgroundPendingStatus() {
-    setStatus("Researching in background — I'll speak when ready.", 'thinking');
+    setStatus("Working on it, I'll respond when finished.", 'thinking');
 }
 
 // ========== Audio playback ==========
@@ -353,7 +353,11 @@ function queueAAC(b64, mime) {
 function drainAACQueue() {
     if (aacQueue.length === 0) { aacPlaying = false; onAudioComplete(); return; }
     aacPlaying = true;
-    setStatus('Speaking...', 'active');
+    if (backgroundTaskPending) {
+        renderBackgroundPendingStatus();
+    } else {
+        setStatus('Speaking...', 'active');
+    }
 
     if (needsPreroll) {
         needsPreroll = false;
@@ -536,7 +540,7 @@ function connect() {
             setStatus('❌ ' + (e.reason || 'Connection refused'));
         } else {
             if (backgroundTaskPending) {
-                setStatus("Researching in background — reconnecting...", 'thinking');
+                setStatus("Working on it, I'll respond when finished.", 'thinking');
             } else {
                 setStatus('Disconnected — reconnecting...');
             }

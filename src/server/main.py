@@ -70,7 +70,7 @@ TASK_RESULT_END = "<<<END_UNTRUSTED_CHILD_RESULT>>>"
 WORK_COMMUTE_DESTINATION = "Work destination"
 WORK_COMMUTE_DEFAULT_ORIGIN = "Current location"
 BACKGROUND_RESEARCH_TIMEOUT_S = 180
-FOREGROUND_STANDBY_AFTER_S = 45
+FOREGROUND_STANDBY_AFTER_S = 10
 VOICE_RESULT_NORMAL_MAX_CHARS = 1500
 VOICE_RESULT_NORMAL_MAX_SENTENCES = 10
 VOICE_RESULT_DEEP_MAX_CHARS = 3000
@@ -684,14 +684,74 @@ def is_work_commute_request(text: str) -> bool:
     return workish and routeish
 
 
+def detect_voice_intents(text: str) -> set[str]:
+    """Classify primary voice intents with regex fast-path + semantic fallback."""
+    intents: set[str] = set()
+    lower = text.lower().strip()
+    tokens = set(re.findall(r"[a-z']+", lower))
+
+    if is_send_copy_to_email_request(text):
+        intents.add("email_copy")
+    elif lower:
+        # Semantic fallback so we do not need to enumerate every phrasing.
+        email_action_terms = {
+            "send", "email", "mail", "forward", "share", "deliver",
+        }
+        email_target_terms = {
+            "email", "gmail", "inbox", "mailbox",
+        }
+        email_object_terms = {
+            "it", "this", "that", "copy", "summary", "answer", "response", "recap", "result",
+        }
+        if (
+            tokens.intersection(email_action_terms)
+            and tokens.intersection(email_target_terms)
+            and (
+                tokens.intersection(email_object_terms)
+                or "to my" in lower
+                or "send me" in lower
+                or "for me" in lower
+            )
+        ):
+            intents.add("email_copy")
+
+    if is_work_commute_request(text):
+        intents.add("commute")
+
+    if is_background_research_request(text):
+        intents.add("background_research")
+    elif lower:
+        # Fallback intent for natural variants like:
+        # "can you research X and let me know when done".
+        async_markers = (
+            "background",
+            "get back to me",
+            "when finished",
+            "when done",
+            "later",
+            "follow up",
+            "let me know",
+        )
+        research_tokens = {
+            "research", "analyze", "analysis", "investigate", "look", "check", "deep", "dive",
+        }
+        if tokens.intersection(research_tokens) and any(marker in lower for marker in async_markers):
+            intents.add("background_research")
+
+    return intents
+
+
 def is_send_copy_to_email_request(text: str) -> bool:
     """Return true for explicit voice follow-ups asking to email the prior answer."""
     lower = text.lower()
     explicit_patterns = (
         r"\b(send|email|mail|forward)\b.{0,40}\b(copy|summary)\b.{0,40}\b(email|gmail|my inbox)\b",
         r"\b(send|email|mail|forward)\b.{0,24}\bthat\b.{0,40}\b(email|gmail|my inbox)\b",
+        r"\b(send|email|mail|forward)\b.{0,24}\b(it|this)\b.{0,40}\b(to\b.{0,24})?(email|gmail|my inbox)\b",
         r"\bsend a copy of that\b",
         r"\bemail that to my gmail\b",
+        r"\bemail it to my gmail\b",
+        r"\bemail this to my gmail\b",
     )
     if any(re.search(pattern, lower) for pattern in explicit_patterns):
         return True
@@ -732,7 +792,12 @@ def build_email_copy_body(final_texts: list[str]) -> str:
         lowered = cleaned.lower()
         if "sent" in lowered and ("email" in lowered or "inbox" in lowered):
             continue
-        if "working on that" in lowered or "please stand by" in lowered:
+        if (
+            "working on that" in lowered
+            or "please stand by" in lowered
+            or "working on it" in lowered
+            or "respond when finished" in lowered
+        ):
             continue
         if cleaned not in usable:
             usable.append(cleaned)
@@ -762,7 +827,12 @@ def _pick_recent_copy_candidate(final_texts: list[str]) -> str:
             "i also sent that summary to your email inbox.",
         }:
             continue
-        if "please stand by" in lowered or "working on that" in lowered:
+        if (
+            "please stand by" in lowered
+            or "working on that" in lowered
+            or "working on it" in lowered
+            or "respond when finished" in lowered
+        ):
             continue
         if is_nonfinal_background_result(cleaned):
             continue
@@ -862,6 +932,7 @@ def is_background_research_request(text: str) -> bool:
     explicit_async = any(
         phrase in lower
         for phrase in (
+            "background research",
             "spawn multiple agents",
             "multiple agents",
             "sub agents",
@@ -871,6 +942,8 @@ def is_background_research_request(text: str) -> bool:
             "get back to me later",
             "deep research",
             "research this deeply",
+            "look into",
+            "check into",
         )
     )
     research_terms = sum(
@@ -1413,6 +1486,9 @@ async def websocket_endpoint(websocket: WebSocket):
         if not transcript.strip():
             return
         voice_result_max_chars, voice_result_max_sentences = voice_result_budget_for_prompt(transcript)
+        intents = detect_voice_intents(transcript)
+        wants_email_copy = "email_copy" in intents
+        wants_background_research = "background_research" in intents
 
         if echo_transcript:
             await websocket.send_json({
@@ -1484,8 +1560,14 @@ async def websocket_endpoint(websocket: WebSocket):
                 sentence_buffer = sentence_buffer[earliest_idx:]
                 if sentence:
                     await tts_queue.put(sentence)
+            # Also flush a sentence that ends with punctuation even when there is
+            # no trailing whitespace yet (e.g. "I'll respond when finished.").
+            stripped_tail = sentence_buffer.strip()
+            if stripped_tail and stripped_tail.endswith((".", "!", "?")):
+                sentence_buffer = ""
+                await tts_queue.put(stripped_tail)
 
-        if is_send_copy_to_email_request(transcript):
+        if wants_email_copy:
             session_path, session_offset = await snapshot_session_offset(session_owner_key)
             recent_finals = await read_recent_assistant_final_texts(
                 session_path,
@@ -1520,10 +1602,10 @@ async def websocket_endpoint(websocket: WebSocket):
                     "I do not have a finished answer to copy yet. I queued it and will send it as soon as that answer is ready."
                 )
             raw_stream_chars = len(full_response)
-        elif is_orchestrator_backend and is_background_research_request(transcript):
+        elif is_orchestrator_backend and wants_background_research:
             await websocket.send_json({"type": "background_task_started"})
             await emit_filtered(
-                "I'm working on that now and I'll get back to you when the research is ready."
+                "Working on it, I'll respond when finished."
             )
             background_task = asyncio.create_task(run_background_research(transcript))
             track_background_task(background_task)
@@ -1566,7 +1648,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         FOREGROUND_STANDBY_AFTER_S,
                     )
                     await websocket.send_json({"type": "background_task_started"})
-                    await emit_filtered("I'm still working on that. Please stand by.")
+                    await emit_filtered("Working on it, I'll respond when finished.")
                     try:
                         response_text = await asyncio.wait_for(
                             asyncio.shield(response_task),
@@ -1652,7 +1734,7 @@ async def websocket_endpoint(websocket: WebSocket):
             await tts_queue.put(leftover)
 
         copy_candidate = clean_for_display(full_response).strip()
-        if copy_candidate and not is_send_copy_to_email_request(transcript):
+        if copy_candidate and not wants_email_copy:
             last_spoken_answer = copy_candidate
             _, fg_offset = await snapshot_session_offset(session_owner_key)
             await persist_delivery_state(session_offset=fg_offset)
