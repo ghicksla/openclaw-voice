@@ -6,6 +6,10 @@
     <title>OpenClaw Voice</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --color-user-text: #ff6b35;
+            --color-assistant-text: #4fc3f7;
+        }
 
         html, body {
             height: 100%;
@@ -138,11 +142,16 @@
             color: #888;
             border-radius: 8px;
             cursor: pointer;
-            font-size: 1.1rem;
+            font-size: 0.9rem;
             line-height: 1;
             transition: all 0.2s;
             flex-shrink: 0;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
         }
+        .loop-btn svg { width: 18px; height: 18px; display: block; }
+        .loop-btn .mode-label { font-weight: 600; letter-spacing: 0.01em; }
         .loop-btn:hover { border-color: #ff6b35; color: #ff6b35; }
         .loop-btn.active {
             border-color: #ff6b35;
@@ -161,6 +170,21 @@
         }
         @keyframes spin { to { transform: rotate(360deg); } }
 
+        /* Blue waveform visualizer */
+        .waveform-wrap {
+            width: 100%;
+            height: 64px;
+            margin: 4px 0 12px;
+            opacity: 0;
+            transition: opacity 0.15s ease;
+        }
+        .waveform-wrap.visible { opacity: 1; }
+        #waveCanvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
         /* Transcript */
         .transcript-box {
             background: rgba(255, 255, 255, 0.05);
@@ -178,9 +202,9 @@
             margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.1em;
         }
         .transcript-box p { font-size: 1rem; line-height: 1.6; color: #ccc; margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid rgba(255,255,255,0.05); }
-        .transcript-box p.user { color: #ff6b35; }
-        .transcript-box p.assistant { color: #4fc3f7; }
-        .transcript-box p.preview { color: #ff6b35; opacity: 0.6; font-style: italic; }
+        .transcript-box p.user { color: var(--color-user-text); }
+        .transcript-box p.assistant { color: var(--color-assistant-text); }
+        .transcript-box p.preview { color: var(--color-user-text); opacity: 0.6; font-style: italic; }
         .transcript-box code {
             background: rgba(255, 255, 255, 0.1);
             padding: 2px 6px; border-radius: 4px;
@@ -221,6 +245,10 @@
             Hold to Talk
         </button>
 
+        <div class="waveform-wrap" id="waveWrap">
+            <canvas id="waveCanvas"></canvas>
+        </div>
+
         <div class="transcript-box">
             <h3>Conversation</h3>
             <div id="transcript"></div>
@@ -229,14 +257,7 @@
         <div class="controls">
             <button id="newChatBtn">New Chat</button>
             <button id="clearBtn">Clear History</button>
-            <button class="loop-btn" id="loopBtn" title="Continuous mode" aria-label="Toggle continuous mode">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                    <polyline points="17 1 21 5 17 9"/>
-                    <path d="M3 11V9a4 4 0 0 1 4-4h14"/>
-                    <polyline points="7 23 3 19 7 15"/>
-                    <path d="M21 13v2a4 4 0 0 1-4 4H3"/>
-                </svg>
-            </button>
+            <button class="loop-btn" id="loopBtn" title="Switch to listening mode" aria-label="Switch to listening mode"></button>
         </div>
 
         <p class="error" id="error"></p>
@@ -254,6 +275,9 @@ const clearBtn    = document.getElementById('clearBtn');
 const loopBtn     = document.getElementById('loopBtn');
 const micBanner   = document.getElementById('micBanner');
 const micPermBtn  = document.getElementById('micPermBtn');
+const waveWrap    = document.getElementById('waveWrap');
+const waveCanvas  = document.getElementById('waveCanvas');
+const waveCtx     = waveCanvas.getContext('2d');
 
 // --- State ---
 let ws = null;
@@ -261,6 +285,10 @@ let mediaStream = null;
 let audioContext = null;
 let audioSource = null;
 let audioProcessor = null;
+let silentGain = null;
+let micAnalyser = null;
+let micTimeData = null;
+let micVisualAnim = null;
 let isRecording = false;
 let continuousMode = false;
 // Tracks an explicit user-initiated stop in continuous mode so the auto-restart
@@ -271,10 +299,321 @@ let currentResponseElement = null;
 let streamingText = '';
 let modelName = ''; // <- ADDED
 let backgroundTaskPending = false;
+let waveState = 'idle'; // idle | listening | speaking | thinking
+const isSafariLike = /Safari/i.test(navigator.userAgent)
+    && !/Chrome|Chromium|CriOS|FxiOS|Edg/i.test(navigator.userAgent);
+let waveAnim = null;
+let micEnergy = 0;
+let waveSmooth = new Float32Array(48);
+let barTargets = new Float32Array(48);
+let waveHasMicData = false;
+let playbackEnergy = 0;
+let playbackCtx = null;
+let playbackSource = null;
+let playbackAnalyser = null;
+let playbackTimeData = null;
+let playbackDecodeCtx = null;
+let activePlaybackItem = null;
+let activePlaybackStartedAt = 0;
+const rootStyles = getComputedStyle(document.documentElement);
+const waveInputColor = (rootStyles.getPropertyValue('--color-user-text') || '#ff6b35').trim();
+const waveOutputColor = (rootStyles.getPropertyValue('--color-assistant-text') || '#4fc3f7').trim();
+const LOOP_ICON_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>`;
+const WALKIE_ICON_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v3"/><path d="M9 6h6"/><rect x="7" y="7" width="10" height="14" rx="2"/><path d="M10 11h4"/><path d="M10 14h4"/><circle cx="12" cy="18" r="1"/></svg>`;
+
+function renderModeToggle() {
+    const listeningMode = continuousMode;
+    const icon = listeningMode ? LOOP_ICON_SVG : WALKIE_ICON_SVG;
+    const label = listeningMode ? 'Continuous' : 'Hold to talk';
+    const title = listeningMode ? 'Switch to hold-to-talk mode' : 'Switch to listening mode';
+    loopBtn.innerHTML = `${icon}<span class="mode-label">${label}</span>`;
+    loopBtn.title = title;
+    loopBtn.setAttribute('aria-label', title);
+}
 
 function playTone() {
     // Intentionally disabled: use iPhone-native audio behavior only.
 }
+
+function sizeWaveCanvas() {
+    const rect = waveCanvas.parentElement.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    waveCanvas.width = Math.max(1, Math.floor(rect.width * dpr));
+    waveCanvas.height = Math.max(1, Math.floor(rect.height * dpr));
+    waveCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+function setWaveState(state) {
+    waveState = state;
+    const visible = state !== 'idle';
+    waveWrap.classList.toggle('visible', visible);
+    if (waveAnim) {
+        cancelAnimationFrame(waveAnim);
+        waveAnim = null;
+    }
+    if (visible) {
+        sizeWaveCanvas();
+        animateWave();
+    } else {
+        waveSmooth.fill(0);
+        waveHasMicData = false;
+        const dpr = window.devicePixelRatio || 1;
+        waveCtx.clearRect(0, 0, waveCanvas.width / dpr, waveCanvas.height / dpr);
+    }
+}
+
+function updateWaveTargetsFromMic(raw) {
+    const bars = barTargets.length;
+    const step = Math.max(1, Math.floor(raw.length / bars));
+    let totalE = 0;
+    for (let i = 0; i < bars; i++) {
+        let sum = 0;
+        for (let j = 0; j < step; j++) sum += Math.abs(raw[i * step + j] || 0);
+        barTargets[i] = (sum / step) * 600;
+        totalE += barTargets[i];
+    }
+    micEnergy = totalE / bars;
+    waveHasMicData = true;
+}
+
+function startMicVisualLoop() {
+    if (!micAnalyser || micVisualAnim) return;
+    micTimeData = new Uint8Array(micAnalyser.fftSize);
+    const pcm = new Float32Array(micAnalyser.fftSize);
+
+    const tick = () => {
+        if (!isRecording || !micAnalyser) {
+            micVisualAnim = null;
+            return;
+        }
+        micAnalyser.getByteTimeDomainData(micTimeData);
+        for (let i = 0; i < micTimeData.length; i++) {
+            pcm[i] = ((micTimeData[i] || 128) - 128) / 128;
+        }
+        micEnergy = pcm.reduce((s, v) => s + Math.abs(v), 0) / pcm.length;
+        updateWaveTargetsFromMic(pcm);
+        micVisualAnim = requestAnimationFrame(tick);
+    };
+
+    micVisualAnim = requestAnimationFrame(tick);
+}
+
+function stopMicVisualLoop() {
+    if (micVisualAnim) cancelAnimationFrame(micVisualAnim);
+    micVisualAnim = null;
+    micAnalyser = null;
+    micTimeData = null;
+}
+
+function ensurePlaybackAnalyzer() {
+    if (playbackAnalyser) return;
+    // iOS/Safari can route <audio> playback outside Web Audio. Wiring the
+    // element through createMediaElementSource can silence speech output, so
+    // keep iPhone playback on the native <audio> path.
+    if (isSafariLike) return;
+    try {
+        const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+        playbackCtx = new AudioContextCtor();
+        playbackSource = playbackCtx.createMediaElementSource(player);
+        playbackAnalyser = playbackCtx.createAnalyser();
+        playbackAnalyser.fftSize = 1024;
+        playbackTimeData = new Uint8Array(playbackAnalyser.frequencyBinCount);
+        playbackSource.connect(playbackAnalyser);
+        playbackAnalyser.connect(playbackCtx.destination);
+    } catch (e) {
+        console.warn('Playback analyser unavailable:', e);
+    }
+}
+
+function updateWaveTargetsFromPlayback() {
+    if (!playbackAnalyser || !playbackTimeData || !aacPlaying) return false;
+    playbackAnalyser.getByteTimeDomainData(playbackTimeData);
+    const bars = barTargets.length;
+    const step = Math.max(1, Math.floor(playbackTimeData.length / bars));
+    let total = 0;
+    for (let i = 0; i < bars; i++) {
+        let sum = 0;
+        for (let j = 0; j < step; j++) {
+            const v = ((playbackTimeData[i * step + j] || 128) - 128) / 128;
+            sum += Math.abs(v);
+        }
+        barTargets[i] = (sum / step) * 650;
+        total += barTargets[i];
+    }
+    playbackEnergy = total / bars;
+    // Flatline output (all ~128 samples) means the analyser is wired but not
+    // receiving usable speech amplitude. Treat that like "no playback signal"
+    // so the speaking waveform falls back to animated motion instead of
+    // freezing as tiny static bars.
+    if (playbackEnergy < 1.2) return false;
+    return true;
+}
+
+function updateWaveTargetsFromDecodedEnvelope(now) {
+    if (!activePlaybackItem || !activePlaybackItem.envelopeFrames || !activePlaybackStartedAt) return false;
+    const frames = activePlaybackItem.envelopeFrames;
+    const frameCount = activePlaybackItem.envelopeFrameCount || 0;
+    const duration = activePlaybackItem.envelopeDurationSec || 0;
+    const bars = barTargets.length;
+    if (!duration || !frameCount || frames.length === 0) return false;
+
+    const elapsedSec = Math.max(0, (performance.now() - activePlaybackStartedAt) / 1000);
+    const progress = Math.min(1, elapsedSec / duration);
+    const frameIdx = Math.min(frameCount - 1, Math.floor(progress * frameCount));
+    const base = frameIdx * bars;
+
+    let total = 0;
+    for (let i = 0; i < bars; i++) {
+        // Mild gain to match input range while preserving decoded per-bar shape.
+        const v = Math.max(0, Math.min(1, (frames[base + i] || 0) * 1.25));
+        barTargets[i] = v * 600;
+        total += barTargets[i];
+    }
+    playbackEnergy = total / bars;
+    return playbackEnergy > 0.5;
+}
+
+function getPlaybackDecodeContext() {
+    if (playbackDecodeCtx) return playbackDecodeCtx;
+    const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextCtor) return null;
+    playbackDecodeCtx = new AudioContextCtor();
+    return playbackDecodeCtx;
+}
+
+async function buildPlaybackEnvelope(item) {
+    if (!item || !item.bytes || item.envelopeReady) return;
+    item.envelopeReady = true;
+    const ctx = getPlaybackDecodeContext();
+    if (!ctx) return;
+    try {
+        const copied = item.bytes.buffer.slice(item.bytes.byteOffset, item.bytes.byteOffset + item.bytes.byteLength);
+        const audioBuffer = await ctx.decodeAudioData(copied.slice(0));
+        const channels = Math.max(1, audioBuffer.numberOfChannels);
+        const length = audioBuffer.length;
+        const duration = Math.max(0.001, audioBuffer.duration || 0.001);
+        const bars = barTargets.length;
+        const frameCount = Math.max(24, Math.min(720, Math.round(duration * 90)));
+        const frames = new Float32Array(frameCount * bars);
+        let maxVal = 0;
+
+        for (let f = 0; f < frameCount; f++) {
+            const frameStart = Math.floor((f / frameCount) * length);
+            const frameEnd = Math.min(length, Math.floor(((f + 1) / frameCount) * length));
+            const frameLen = Math.max(1, frameEnd - frameStart);
+
+            for (let b = 0; b < bars; b++) {
+                const bStart = frameStart + Math.floor((b / bars) * frameLen);
+                const bEnd = frameStart + Math.floor(((b + 1) / bars) * frameLen);
+                let sum = 0;
+                let samples = 0;
+                for (let c = 0; c < channels; c++) {
+                    const data = audioBuffer.getChannelData(c);
+                    for (let s = bStart; s < bEnd; s++) {
+                        sum += Math.abs(data[s] || 0);
+                        samples++;
+                    }
+                }
+                const val = samples ? (sum / samples) : 0;
+                const idx = f * bars + b;
+                frames[idx] = val;
+                if (val > maxVal) maxVal = val;
+            }
+        }
+
+        if (maxVal > 0) {
+            const scale = 1 / maxVal;
+            for (let i = 0; i < frames.length; i++) {
+                frames[i] = Math.max(0, Math.min(1, frames[i] * scale));
+            }
+        }
+
+        item.envelopeFrames = frames;
+        item.envelopeFrameCount = frameCount;
+        item.envelopeDurationSec = audioBuffer.duration || 0;
+    } catch (e) {
+        // Ignore decode failures and keep fallback animation path.
+    }
+}
+
+function renderWaveBars(width, height, color) {
+    const bars = waveSmooth.length;
+    const gap = 3;
+    const barW = (width - gap * (bars - 1)) / bars;
+    waveCtx.clearRect(0, 0, width, height);
+    waveCtx.fillStyle = color;
+    for (let i = 0; i < bars; i++) {
+        const h = Math.max(2, waveSmooth[i]);
+        const x = i * (barW + gap);
+        const y = (height - h) / 2;
+        waveCtx.fillRect(x, y, barW, h);
+    }
+}
+
+function animateWave() {
+    if (waveState === 'idle') return;
+    const dpr = window.devicePixelRatio || 1;
+    const width = waveCanvas.width / dpr;
+    const height = waveCanvas.height / dpr;
+    const bars = waveSmooth.length;
+    const now = performance.now() / 1000;
+    const hasPlaybackSignal = waveState === 'speaking'
+        ? (updateWaveTargetsFromPlayback() || updateWaveTargetsFromDecodedEnvelope(now))
+        : false;
+
+    for (let i = 0; i < bars; i++) {
+        let target = 4;
+        if (waveState === 'listening') {
+            if (waveHasMicData) {
+                const ripple = micEnergy * (
+                    0.3 * Math.sin(now * 4.5 + i * 0.28)
+                    + 0.2 * Math.sin(now * 7.1 + i * 0.45)
+                    + 0.15 * Math.sin(now * 11 + i * 0.13)
+                );
+                target = Math.min(height - 2, barTargets[i] + ripple);
+            } else {
+                target = (0.02 + 0.01 * Math.sin(now * 3 + i * 0.2)) * 600;
+            }
+            waveSmooth[i] += (target - waveSmooth[i]) * 0.2;
+        } else if (waveState === 'speaking') {
+            if (hasPlaybackSignal) {
+                const ripple = playbackEnergy * 0.015 * Math.sin(now * 6 + i * 0.35);
+                target = Math.min(height - 2, barTargets[i] + ripple);
+            } else {
+                // No output signal: decay to flat baseline (same behavior users
+                // expect from the input waveform when silence is present).
+                target = 0;
+            }
+            const follow = target > waveSmooth[i] ? 0.26 : 0.20;
+            waveSmooth[i] += (target - waveSmooth[i]) * follow;
+        } else if (waveState === 'thinking') {
+            // Small spinning lobe sweeps across bars while thinking.
+            const sweepSpeed = 0.45;
+            const sweep = (now * sweepSpeed * bars) % bars;
+            const linearDist = Math.abs(i - sweep);
+            const circularDist = Math.min(linearDist, bars - linearDist);
+            const lobe = Math.max(0, 1 - circularDist / (bars / 2));
+            target = (
+                0.012
+                + 0.035 * lobe
+                + 0.008 * Math.sin(now * 5.4 + i * 0.22)
+                + 0.006 * Math.sin(now * 2.1 + i * 0.11)
+            ) * 600;
+            waveSmooth[i] += (Math.min(height - 2, target) - waveSmooth[i]) * 0.10;
+        } else {
+            target = 0;
+            waveSmooth[i] += (target - waveSmooth[i]) * 0.15;
+        }
+    }
+
+    const color = waveState === 'speaking' ? waveOutputColor : waveState === 'thinking' ? '#f59e0b' : waveInputColor;
+    renderWaveBars(width, height, color);
+
+    waveAnim = requestAnimationFrame(animateWave);
+}
+
+sizeWaveCanvas();
+window.addEventListener('resize', sizeWaveCanvas);
 
 // Audio playback via a single persistent <audio> element.
 // iOS Safari needs one user-gesture .play() to "warm" the element;
@@ -332,7 +671,7 @@ function setBackgroundTaskPending(value) {
     persistBackgroundPending();
 }
 function renderBackgroundPendingStatus() {
-    setStatus("Working on it, I'll respond when finished.", 'thinking');
+    setStatus("Working on it. I'll respond shortly.", 'thinking');
 }
 
 // ========== Audio playback ==========
@@ -342,25 +681,41 @@ function warmUpPlayer() {
     if (playerWarmedUp) return;
     const silentWav = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=';
     player.src = silentWav;
-    player.play().then(() => { playerWarmedUp = true; }).catch(() => {});
+    player.play().then(() => {
+        playerWarmedUp = true;
+        ensurePlaybackAnalyzer();
+        if (playbackCtx && playbackCtx.state === 'suspended') playbackCtx.resume().catch(() => {});
+    }).catch(() => {});
 }
 
 function queueAAC(b64, mime) {
-    aacQueue.push({ b64, mime: mime || 'audio/aac' });
+    const raw = atob(b64);
+    const bytes = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+    const item = {
+        mime: mime || 'audio/aac',
+        bytes,
+        envelopeFrames: null,
+        envelopeFrameCount: 0,
+        envelopeDurationSec: 0,
+        envelopeReady: false
+    };
+    aacQueue.push(item);
+    buildPlaybackEnvelope(item);
     if (!aacPlaying) drainAACQueue();
 }
 
 function drainAACQueue() {
     if (aacQueue.length === 0) { aacPlaying = false; onAudioComplete(); return; }
     aacPlaying = true;
-    if (backgroundTaskPending) {
-        renderBackgroundPendingStatus();
-    } else {
-        setStatus('Speaking...', 'active');
-    }
+    ensurePlaybackAnalyzer();
+    if (playbackCtx && playbackCtx.state === 'suspended') playbackCtx.resume().catch(() => {});
+    setStatus('Speaking...', 'active');
 
     if (needsPreroll) {
         needsPreroll = false;
+        activePlaybackItem = null;
+        activePlaybackStartedAt = 0;
         player.onended = () => drainAACQueue();
         player.onerror = () => drainAACQueue();
         player.src = SILENT_PREROLL_WAV;
@@ -370,21 +725,20 @@ function drainAACQueue() {
 
     const item = aacQueue.shift();
     if (!item) { aacPlaying = false; onAudioComplete(); return; }
-    const b64 = item.b64;
     const mime = item.mime || 'audio/aac';
     if (currentBlobUrl) { URL.revokeObjectURL(currentBlobUrl); currentBlobUrl = null; }
 
-    const raw = atob(b64);
-    const bytes = new Uint8Array(raw.length);
-    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-    const blob = new Blob([bytes], { type: mime });
+    const blob = new Blob([item.bytes], { type: mime });
     currentBlobUrl = URL.createObjectURL(blob);
+    activePlaybackItem = item;
+    activePlaybackStartedAt = 0;
 
     player.onended = () => drainAACQueue();
     player.onerror = () => { console.error('Audio play error'); drainAACQueue(); };
     player.src = currentBlobUrl;
     // For iOS first-word clipping: wait a tiny bit for the audio hardware to fully wake up
     setTimeout(() => {
+        activePlaybackStartedAt = performance.now();
         player.play().catch(() => drainAACQueue());
     }, 60);
 }
@@ -392,6 +746,8 @@ function drainAACQueue() {
 function flushAACQueue() {
     aacQueue.length = 0;
     aacPlaying = false;
+    activePlaybackItem = null;
+    activePlaybackStartedAt = 0;
     needsPreroll = true;
     player.onended = null;
     player.onerror = null;
@@ -450,6 +806,12 @@ function setStatus(text, mode) {
         statusEl.className = 'status';
         statusEl.textContent = text;
     }
+
+    const lower = (text || '').toLowerCase();
+    if (mode === 'thinking') setWaveState('thinking');
+    else if (lower.includes('speaking')) setWaveState('speaking');
+    else if (lower.includes('listening')) setWaveState('listening');
+    else if (lower.startsWith('ready') || lower.startsWith('paused') || lower.includes('disconnected')) setWaveState('idle');
 }
 
 // ========== Transcript helpers ==========
@@ -540,7 +902,7 @@ function connect() {
             setStatus('❌ ' + (e.reason || 'Connection refused'));
         } else {
             if (backgroundTaskPending) {
-                setStatus("Working on it, I'll respond when finished.", 'thinking');
+                setStatus("Researching in background — reconnecting...", 'thinking');
             } else {
                 setStatus('Disconnected — reconnecting...');
             }
@@ -607,7 +969,9 @@ function handleMessage(msg) {
 async function requestMic() {
     try {
         mediaStream = await navigator.mediaDevices.getUserMedia({
-            audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true }
+            audio: isSafariLike
+                ? { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+                : { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true }
         });
         micBanner.classList.remove('visible');
         voiceBtn.disabled = false;
@@ -675,10 +1039,16 @@ async function startRecording(fromContinuousRestart) {
     clearPreview();
 
     if (!audioContext || audioContext.state === 'closed') {
-        audioContext = new AudioContext({ sampleRate: 16000 });
+        const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+        audioContext = isSafariLike ? new AudioContextCtor() : new AudioContextCtor({ sampleRate: 16000 });
     }
+    if (audioContext.state === 'suspended') await audioContext.resume();
     audioSource = audioContext.createMediaStreamSource(mediaStream);
+    micAnalyser = audioContext.createAnalyser();
+    micAnalyser.fftSize = 512;
     audioProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+    silentGain = audioContext.createGain();
+    silentGain.gain.value = 0;
 
     lastSoundTime = Date.now();
     recordingStartedAt = Date.now();
@@ -686,6 +1056,8 @@ async function startRecording(fromContinuousRestart) {
     audioProcessor.onaudioprocess = (e) => {
         if (!isRecording) return;
         const data = e.inputBuffer.getChannelData(0);
+        micEnergy = data.reduce((s, v) => s + Math.abs(v), 0) / data.length;
+        updateWaveTargetsFromMic(data);
 
         if (!useBrowserSTT && ws && ws.readyState === WebSocket.OPEN) {
             const bytes = new Uint8Array(data.buffer.slice(0));
@@ -695,7 +1067,7 @@ async function startRecording(fromContinuousRestart) {
         }
 
         if (continuousMode) {
-            const energy = data.reduce((s, v) => s + Math.abs(v), 0) / data.length;
+            const energy = micEnergy;
             const now = Date.now();
             if (energy > 0.015) {
                 lastSoundTime = now;
@@ -711,11 +1083,18 @@ async function startRecording(fromContinuousRestart) {
     };
 
     audioSource.connect(audioProcessor);
-    audioProcessor.connect(audioContext.destination);
+    audioSource.connect(micAnalyser);
+    // Safari needs ScriptProcessor connected to the graph, but not audible.
+    audioProcessor.connect(silentGain);
+    silentGain.connect(audioContext.destination);
 
     isRecording = true;
+    startMicVisualLoop();
     voiceBtn.classList.add('listening');
     voiceBtn.textContent = '🎙️ Listening...';
+    // Browser STT path does not emit server "listening_started", so set
+    // listening status locally to drive the input waveform state.
+    setStatus(continuousMode ? '🎙️ Listening (continuous)...' : '🎙️ Listening...', 'active');
     playTone();
 
     if (useBrowserSTT) {
@@ -738,7 +1117,9 @@ function stopRecording(playSignal = true, userInitiated = false) {
     voiceBtn.classList.remove('listening');
     voiceBtn.textContent = continuousMode ? 'Tap to Talk' : 'Hold to Talk';
 
+    stopMicVisualLoop();
     if (audioProcessor) { audioProcessor.disconnect(); audioProcessor = null; }
+    if (silentGain) { silentGain.disconnect(); silentGain = null; }
     if (audioSource) { audioSource.disconnect(); audioSource = null; }
     // Always release the record graph before playback. Keeping mic capture open
     // during TTS can force iOS into a lower "play+record" output route.
@@ -857,7 +1238,8 @@ loopBtn.addEventListener('click', () => {
     continuousMode = !continuousMode;
     userPausedContinuous = false;
     loopBtn.classList.toggle('active', continuousMode);
-    voiceBtn.textContent = continuousMode ? 'Tap to Talk' : 'Hold to Talk';
+    voiceBtn.textContent = continuousMode ? 'Listening Mode' : 'Hold to Talk';
+    renderModeToggle();
     if (continuousMode) {
         playTone();
         setStatus('🎙️ Continuous mode — tap to start', 'active');
@@ -880,6 +1262,7 @@ loopBtn.addEventListener('click', () => {
 
 restoreTranscript();
 restoreBackgroundPending();
+renderModeToggle();
 connect();
 
 // Request mic permission immediately — avoids the awkward first-tap dance.
