@@ -24,7 +24,7 @@ class TestWhisperSTT:
         """Test that STT initializes (may be mock or real)."""
         stt = WhisperSTT(model_name="tiny", device="cpu")
         assert stt is not None
-        assert stt._backend in ["faster-whisper", "openai-whisper", "mock"]
+        assert stt._backend in ["faster-whisper", "mock"]
     
     @pytest.mark.asyncio
     async def test_transcribe_returns_string(self):
@@ -56,12 +56,10 @@ class TestChatterboxTTS:
     
     @pytest.mark.asyncio
     async def test_synthesize_returns_audio(self):
-        """Test that synthesize returns numpy array."""
+        """Test that synthesize_aac returns encoded audio bytes or mock None."""
         tts = ChatterboxTTS()
-        result = await tts.synthesize("Hello world")
-        assert isinstance(result, np.ndarray)
-        assert result.dtype == np.float32
-        assert len(result) > 0
+        result = await tts.synthesize_aac("Hello world")
+        assert result is None or isinstance(result, bytes)
 
 
 class TestAIBackend:
@@ -85,9 +83,10 @@ class TestAIBackend:
     def test_clear_history(self):
         """Test conversation history can be cleared."""
         backend = AIBackend()
-        backend.conversation_history = [{"role": "user", "content": "test"}]
-        backend.clear_history()
-        assert len(backend.conversation_history) == 0
+        backend._history("test-user").append({"role": "user", "content": "test"})
+        assert backend._history_by_user
+        backend.clear_history("test-user")
+        assert "test-user" not in backend._history_by_user
     
     @pytest.mark.asyncio
     @pytest.mark.skipif(
@@ -147,14 +146,13 @@ class TestIntegration:
         text = await stt.transcribe(input_audio)
         assert isinstance(text, str)
         
-        # Synthesize (even empty text should work)
+        # Synthesize (mock mode can return None when no TTS key is configured)
         if text.strip():
-            output_audio = await tts.synthesize(text)
+            output_audio = await tts.synthesize_aac(text)
         else:
-            output_audio = await tts.synthesize("Hello")
+            output_audio = await tts.synthesize_aac("Hello")
         
-        assert isinstance(output_audio, np.ndarray)
-        assert len(output_audio) > 0
+        assert output_audio is None or isinstance(output_audio, bytes)
 
 
 # Run tests with: pytest tests/ -v

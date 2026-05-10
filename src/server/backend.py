@@ -57,6 +57,9 @@ class AIBackend:
                 logger.info(f"✅ OpenAI client ready (model: {self.model})")
             except ImportError:
                 logger.error("openai package not installed")
+            except Exception as e:
+                logger.warning(f"OpenAI client unavailable: {e}")
+                self._client = None
         elif self.backend_type == "openclaw":
             # OpenClaw gateway uses OpenAI-compatible API
             logger.info("OpenClaw gateway backend")

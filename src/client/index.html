@@ -1090,6 +1090,7 @@ async function startRecording(fromContinuousRestart) {
     silentGain.connect(audioContext.destination);
 
     isRecording = true;
+    setWaveState('listening');
     startMicVisualLoop();
     voiceBtn.classList.add('listening');
     voiceBtn.textContent = '🎙️ Listening...';

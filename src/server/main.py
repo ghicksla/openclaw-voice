@@ -11,6 +11,7 @@ WebSocket server that handles:
 
 import asyncio
 import base64
+from datetime import datetime
 import json
 import os
 import re
@@ -682,6 +683,38 @@ def is_work_commute_request(text: str) -> bool:
     workish = any(term in lower for term in ("to work", "commute", "route to work", "traffic to work"))
     routeish = any(term in lower for term in ("route", "traffic", "accident", "avoid", "leave", "drive"))
     return workish and routeish
+
+
+def is_local_time_request(text: str) -> bool:
+    """Return true for direct requests asking for the current local day/date/time."""
+    lower = text.lower().strip()
+    direct_patterns = (
+        r"\bwhat(?:'s| is)?\s+the\s+time\b",
+        r"\bwhat\s+time\s+is\s+it\b",
+        r"\bwhat(?:'s| is)?\s+the\s+(day|date)\b",
+        r"\bwhat\s+(day|date)\s+is\s+it\b",
+        r"\bwhat(?:'s| is)?\s+the\s+(day|date)\s+and\s+time\b",
+        r"\bwhat(?:'s| is)?\s+the\s+time\s+and\s+(day|date)\b",
+        r"\bwhat\s+(day|date)\s+and\s+time\s+is\s+it\b",
+        r"\bwhat\s+time\s+and\s+(day|date)\s+is\s+it\b",
+        r"\bcurrent\s+time\b",
+        r"\bcurrent\s+(day|date)\b",
+        r"\btoday'?s\s+(day|date)\b",
+        r"\btell\s+me\s+the\s+time\b",
+        r"\btell\s+me\s+the\s+(day|date)\b",
+        r"\btell\s+me\s+the\s+(day|date)\s+and\s+time\b",
+        r"\btime\s+is\s+it\b",
+    )
+    return any(re.search(pattern, lower) for pattern in direct_patterns)
+
+
+def build_local_time_response() -> str:
+    """Return a deterministic local-time voice response."""
+    now_local = datetime.now().astimezone()
+    spoken_time = now_local.strftime("%I:%M %p").lstrip("0")
+    spoken_month_year = now_local.strftime("%A, %B")
+    tz_name = now_local.tzname() or "local time"
+    return f"It's {spoken_month_year} {now_local.day}, {now_local.year} at {spoken_time} {tz_name}."
 
 
 def detect_voice_intents(text: str) -> set[str]:
@@ -1670,7 +1703,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 sentence_buffer = ""
                 await tts_queue.put(stripped_tail)
 
-        if wants_email_copy and compound_email_task:
+        if is_local_time_request(transcript):
+            await emit_filtered(build_local_time_response())
+            raw_stream_chars = len(full_response)
+        elif wants_email_copy and compound_email_task:
             session_path, session_offset = await snapshot_session_offset(session_owner_key)
             pending_email_copy_request = _make_pending_email_copy_request(
                 to_address=load_primary_email_address(),

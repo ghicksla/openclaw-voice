@@ -3,7 +3,6 @@ Speech-to-Text module using Whisper.
 """
 
 import asyncio
-from typing import Optional
 
 import numpy as np
 from loguru import logger
@@ -27,30 +26,23 @@ class WhisperSTT:
     
     def _load_model(self):
         """Load the Whisper model."""
-        # Try faster-whisper first
+        # Prefer faster-whisper (CPU-friendly, no torch required).
         try:
             from faster_whisper import WhisperModel
             
             if self.device == "auto":
-                import torch
-                if torch.cuda.is_available():
-                    self.device = "cuda"
-                    compute_type = "float16"
-                elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-                    self.device = "cpu"
-                    compute_type = "int8"
-                else:
-                    self.device = "cpu"
-                    compute_type = "int8"
-            elif self.device == "cuda":
-                compute_type = "float16"
-            else:
-                compute_type = "int8"
+                self.device = "cpu"
+
+            if self.device not in ("cpu", "cuda"):
+                logger.warning(f"Unknown STT device '{self.device}', falling back to cpu")
+                self.device = "cpu"
+
+            compute_type = "float16" if self.device == "cuda" else "int8"
             
             logger.info(f"Loading faster-whisper {self.model_name} on {self.device}")
             self.model = WhisperModel(
                 self.model_name,
-                device=self.device if self.device != "mps" else "cpu",
+                device=self.device,
                 compute_type=compute_type,
             )
             self._backend = "faster-whisper"
@@ -60,25 +52,7 @@ class WhisperSTT:
             logger.warning("faster-whisper not available")
         except Exception as e:
             logger.warning(f"faster-whisper failed: {e}")
-        
-        # Try openai-whisper
-        try:
-            import whisper
-            
-            if self.device == "auto":
-                import torch
-                self.device = "cuda" if torch.cuda.is_available() else "cpu"
-            
-            logger.info(f"Loading openai-whisper {self.model_name}")
-            self.model = whisper.load_model(self.model_name, device=self.device)
-            self._backend = "openai-whisper"
-            logger.info("✅ openai-whisper loaded")
-            return
-        except ImportError:
-            logger.warning("openai-whisper not available")
-        except Exception as e:
-            logger.warning(f"openai-whisper failed: {e}")
-        
+
         # Mock mode for testing
         logger.warning("⚠️ No STT backend - using mock mode")
         self._backend = "mock"
@@ -98,11 +72,7 @@ class WhisperSTT:
                 vad_filter=True,
             )
             return " ".join(segment.text for segment in segments).strip()
-        
-        elif self._backend == "openai-whisper":
-            result = self.model.transcribe(audio, language=self.language)
-            return result["text"].strip()
-        
+
         else:
             # Mock mode - return placeholder
             logger.debug(f"Mock STT: received {len(audio)} samples")
