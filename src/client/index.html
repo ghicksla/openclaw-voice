@@ -606,7 +606,7 @@ function animateWave() {
         }
     }
 
-    const color = waveState === 'speaking' ? waveOutputColor : waveState === 'thinking' ? '#f59e0b' : waveInputColor;
+    const color = waveState === 'speaking' || waveState === 'thinking' ? waveOutputColor : waveInputColor;
     renderWaveBars(width, height, color);
 
     waveAnim = requestAnimationFrame(animateWave);
@@ -1056,6 +1056,7 @@ async function startRecording(fromContinuousRestart) {
     audioProcessor.onaudioprocess = (e) => {
         if (!isRecording) return;
         const data = e.inputBuffer.getChannelData(0);
+        if (waveState !== 'listening') setWaveState('listening');
         micEnergy = data.reduce((s, v) => s + Math.abs(v), 0) / data.length;
         updateWaveTargetsFromMic(data);
 
