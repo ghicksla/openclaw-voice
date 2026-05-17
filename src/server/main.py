@@ -43,6 +43,21 @@ from .text_utils import (
 
 
 ANNOUNCE_POLL_INTERVAL_S = 5
+STT_TARGET_SAMPLE_RATE = 16000
+
+
+def prepare_audio_for_stt(audio: np.ndarray, sample_rate: int) -> np.ndarray:
+    """Normalize client PCM to the sample rate expected by faster-whisper."""
+    audio = np.asarray(audio, dtype=np.float32)
+    if audio.size == 0 or sample_rate == STT_TARGET_SAMPLE_RATE:
+        return audio
+    duration = audio.size / sample_rate
+    dst_len = max(1, int(round(duration * STT_TARGET_SAMPLE_RATE)))
+    src_times = np.linspace(0.0, duration, num=audio.size, endpoint=False)
+    dst_times = np.linspace(0.0, duration, num=dst_len, endpoint=False)
+    return np.interp(dst_times, src_times, audio).astype(np.float32)
+
+
 WORKSPACE_ROOT = Path(os.getenv("OPENCLAW_WORKSPACE_ROOT") or Path(__file__).resolve().parents[4])
 AGENTS_CONFIG_PATH = Path(os.getenv("OPENCLAW_AGENTS_CONFIG") or str(WORKSPACE_ROOT / "config" / "agents.json"))
 USER_PROFILE_PATH = Path(os.getenv("OPENCLAW_USER_PROFILE") or str(WORKSPACE_ROOT / "USER.md"))
@@ -1425,6 +1440,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
     audio_buffer = []
     is_listening = False
+    listen_sample_rate = STT_TARGET_SAMPLE_RATE
     session_start = None
     delivered_announce_task_ids: set[str] = set()
     delivered_session_message_ids: set[str] = set()
@@ -2192,19 +2208,30 @@ async def websocket_endpoint(websocket: WebSocket):
             if msg["type"] == "start_listening":
                 is_listening = True
                 audio_buffer = []
+                listen_sample_rate = int(msg.get("sample_rate") or STT_TARGET_SAMPLE_RATE)
                 await websocket.send_json({"type": "listening_started"})
                 logger.debug("Started listening")
+
+            elif msg["type"] == "cancel_listening":
+                is_listening = False
+                audio_buffer = []
+                logger.debug("Cancelled buffered listening audio")
 
             elif msg["type"] == "stop_listening":
                 is_listening = False
 
                 if audio_buffer:
                     audio_data = np.concatenate(audio_buffer)
+                    audio_data = prepare_audio_for_stt(audio_data, listen_sample_rate)
                     logger.debug("Transcribing audio...")
                     transcript = await stt.transcribe(audio_data)
-                    if active_task and not active_task.done():
-                        active_task.cancel()
-                    active_task = asyncio.create_task(process_transcript(transcript))
+                    if transcript.strip():
+                        if active_task and not active_task.done():
+                            active_task.cancel()
+                        active_task = asyncio.create_task(process_transcript(transcript))
+                    else:
+                        await websocket.send_json({"type": "no_speech"})
+                        logger.debug("No speech transcript produced from buffered audio")
 
                 audio_buffer = []
                 await websocket.send_json({"type": "listening_stopped"})
@@ -2224,7 +2251,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 audio_buffer.append(audio_np)
 
                 if vad and len(audio_np) > 0:
-                    has_speech = vad.is_speech(audio_np)
+                    has_speech = vad.is_speech(audio_np, sample_rate=listen_sample_rate)
                     await websocket.send_json({
                         "type": "vad_status",
                         "speech_detected": has_speech,

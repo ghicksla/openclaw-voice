@@ -639,6 +639,8 @@ let recognition = null;
 let localFinalTranscript = '';
 let localInterimTranscript = '';
 let previewElement = null;
+let finishingRecognition = false;
+let awaitingServerTurn = false;
 
 // ========== Session / persistence ==========
 
@@ -765,12 +767,8 @@ function onAudioComplete() {
             setStatus('Paused — tap mic to resume', '');
             return;
         }
-        setStatus('🎙️ Ready to listen...', 'active');
-        setTimeout(() => {
-            if (continuousMode && !isRecording && !userPausedContinuous) {
-                startRecording(true);
-            }
-        }, 500);
+        userPausedContinuous = true;
+        setStatus('Ready — tap mic for next turn', 'active');
     } else {
         setStatus('Ready');
     }
@@ -931,16 +929,25 @@ function handleMessage(msg) {
             setStatus(continuousMode ? '🎙️ Listening (continuous)...' : '🎙️ Listening...', 'active');
             break;
         case 'listening_stopped':
-            setStatus('Thinking...', 'thinking');
+            if (awaitingServerTurn) {
+                awaitingServerTurn = false;
+                setStatus('Thinking...', 'thinking');
+            }
             break;
         case 'assistant_turn_start':
             beginAssistantTurn();
             break;
         case 'transcript':
             // Server echoes user text. If browser STT already rendered a bubble, skip it.
-            if (!useBrowserSTT) addTranscript('You', msg.text, 'user');
+            if (!useBrowserSTT || !previewElement) addTranscript('You', msg.text, 'user');
             setStatus('Thinking...', 'thinking');
             beginAssistantTurn();
+            break;
+        case 'no_speech':
+            awaitingServerTurn = false;
+            clearPreview();
+            userPausedContinuous = true;
+            setStatus('I didn’t catch that — tap mic and try again', '');
             break;
         case 'response_chunk':
             streamingText += msg.text;
@@ -994,7 +1001,7 @@ function setupRecognition() {
     recognition.lang = 'en-US';
 
     recognition.onresult = (event) => {
-        if (!isRecording) return;
+        if (!isRecording && !finishingRecognition) return;
         let fin = '', interim = '';
         for (let i = 0; i < event.results.length; i++) {
             const t = event.results[i][0]?.transcript || '';
@@ -1010,6 +1017,49 @@ function setupRecognition() {
     recognition.onend = () => {
         if (isRecording && recognition) { try { recognition.start(); } catch {} }
     };
+}
+
+function currentBrowserTranscript() {
+    return (localFinalTranscript || localInterimTranscript).trim();
+}
+
+function float32ToBase64(samples) {
+    const pcm = samples instanceof Float32Array ? samples.slice() : new Float32Array(samples);
+    const bytes = new Uint8Array(pcm.buffer);
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin);
+}
+
+function stopRecognitionAndWaitForTranscript() {
+    if (!recognition) return Promise.resolve(currentBrowserTranscript());
+
+    finishingRecognition = true;
+    const activeRecognition = recognition;
+
+    return new Promise((resolve) => {
+        let settled = false;
+        const finish = () => {
+            if (settled) return;
+            settled = true;
+            try { activeRecognition.onend = null; } catch {}
+            try { activeRecognition.onerror = null; } catch {}
+            recognition = null;
+            finishingRecognition = false;
+            resolve(currentBrowserTranscript());
+        };
+
+        const priorOnResult = activeRecognition.onresult;
+        activeRecognition.onresult = (event) => {
+            if (priorOnResult) priorOnResult(event);
+            if (currentBrowserTranscript()) setTimeout(finish, 50);
+        };
+        activeRecognition.onerror = () => finish();
+        activeRecognition.onend = () => finish();
+
+        try { activeRecognition.stop(); } catch { finish(); }
+        setTimeout(finish, 1500);
+    });
 }
 
 // ========== Recording ==========
@@ -1060,11 +1110,9 @@ async function startRecording(fromContinuousRestart) {
         micEnergy = data.reduce((s, v) => s + Math.abs(v), 0) / data.length;
         updateWaveTargetsFromMic(data);
 
-        if (!useBrowserSTT && ws && ws.readyState === WebSocket.OPEN) {
-            const bytes = new Uint8Array(data.buffer.slice(0));
-            let bin = '';
-            for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-            ws.send(JSON.stringify({ type: 'audio', data: btoa(bin) }));
+        // Always buffer audio on the server so we can fall back when browser STT is empty.
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'audio', data: float32ToBase64(data) }));
         }
 
         if (continuousMode) {
@@ -1102,12 +1150,16 @@ async function startRecording(fromContinuousRestart) {
     if (useBrowserSTT) {
         setupRecognition();
         if (recognition) try { recognition.start(); } catch {}
-    } else if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'start_listening' }));
+    }
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+            type: 'start_listening',
+            sample_rate: audioContext ? audioContext.sampleRate : 16000,
+        }));
     }
 }
 
-function stopRecording(playSignal = true, userInitiated = false) {
+async function stopRecording(playSignal = true, userInitiated = false) {
     if (!isRecording) return;
     isRecording = false;
     if (userInitiated && continuousMode) {
@@ -1120,40 +1172,43 @@ function stopRecording(playSignal = true, userInitiated = false) {
     voiceBtn.textContent = continuousMode ? 'Tap to Talk' : 'Hold to Talk';
 
     stopMicVisualLoop();
+
+    // Finish browser STT before tearing down the mic — closing the stream first
+    // causes Chrome to return an empty transcript on later turns.
+    const browserTranscript = useBrowserSTT
+        ? await stopRecognitionAndWaitForTranscript()
+        : '';
+
     if (audioProcessor) { audioProcessor.disconnect(); audioProcessor = null; }
     if (silentGain) { silentGain.disconnect(); silentGain = null; }
     if (audioSource) { audioSource.disconnect(); audioSource = null; }
     // Always release the record graph before playback. Keeping mic capture open
     // during TTS can force iOS into a lower "play+record" output route.
     if (audioContext) { audioContext.close(); audioContext = null; }
-    if (recognition) {
-        try { recognition.onend = null; } catch {}
-        try { recognition.stop(); } catch {}
-        recognition = null;
-    }
-
-    if (mediaStream) {
-        mediaStream.getTracks().forEach(t => t.stop());
-        mediaStream = null;
-    }
+    // Keep mediaStream alive between turns — re-acquiring the mic breaks Chrome STT.
 
     let hasSomethingToSend = false;
     if (ws && ws.readyState === WebSocket.OPEN) {
         if (useBrowserSTT) {
-            const finalText = (localFinalTranscript || localInterimTranscript).trim();
+            const finalText = (browserTranscript || currentBrowserTranscript()).trim();
             clearPreview();
             if (finalText) {
                 hasSomethingToSend = true;
                 addTranscript('You', finalText, 'user');
                 beginAssistantTurn();
                 setStatus('Thinking...', 'thinking');
+                ws.send(JSON.stringify({ type: 'cancel_listening' }));
                 ws.send(JSON.stringify({ type: 'text_input', text: finalText }));
             } else {
-                setStatus('Ready');
+                hasSomethingToSend = true;
+                awaitingServerTurn = true;
+                setStatus('Transcribing...', 'thinking');
+                ws.send(JSON.stringify({ type: 'stop_listening' }));
             }
         } else {
             hasSomethingToSend = true;
-            setStatus('Thinking...', 'thinking');
+            awaitingServerTurn = true;
+            setStatus('Transcribing...', 'thinking');
             ws.send(JSON.stringify({ type: 'stop_listening' }));
         }
     }
