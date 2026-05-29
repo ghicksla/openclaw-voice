@@ -109,10 +109,11 @@ class AIBackend:
         if self._use_gateway_session_memory:
             prefixed = (
                 "[Voice mode hard limit — reply in plain spoken English, 1-2 short sentences, no markdown. "
+                "Keep the required OpenClaw <think>...</think><final>...</final> format; put only the spoken answer inside <final>. "
                 "Do at most one targeted lookup. For calendar/reminder questions, check calendar/reminders only; "
                 "do not search Gmail, finance, broad memory, or narrate your checks. "
                 "If a location is not in the calendar/reminder, say you don't have it saved. "
-                "Return only the answer.] "
+                "The voice client will read only the <final> text aloud.] "
                 f"{user_message}"
             )
             messages = [
@@ -156,10 +157,11 @@ class AIBackend:
         if self._use_gateway_session_memory:
             prefixed = (
                 "[Voice mode hard limit — reply in plain spoken English, 1-2 short sentences, no markdown. "
+                "Keep the required OpenClaw <think>...</think><final>...</final> format; put only the spoken answer inside <final>. "
                 "Do at most one targeted lookup. For calendar/reminder questions, check calendar/reminders only; "
                 "do not search Gmail, finance, broad memory, or narrate your checks. "
                 "If a location is not in the calendar/reminder, say you don't have it saved. "
-                "Return only the answer.] "
+                "The voice client will read only the <final> text aloud.] "
                 f"{user_message}"
             )
             messages = [
