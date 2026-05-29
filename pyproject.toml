@@ -34,6 +34,8 @@ dependencies = [
 stt = [
     "faster-whisper>=1.0.0",
     "webrtcvad>=2.0.10",
+    "scipy>=1.11.0",
+    "noisereduce>=3.0.0",
 ]
 tts = [
     "openai>=1.6.0",
