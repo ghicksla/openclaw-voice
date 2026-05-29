@@ -41,6 +41,16 @@ from .text_utils import (
     looks_like_reasoning_leak,
 )
 
+# Load .env into the process environment before any os.getenv() calls below.
+# pydantic-settings reads .env into Settings, but plain os.getenv() lookups
+# (gateway agent id, workspace paths, etc.) only see real environment vars —
+# without this, a .env-based deploy would silently miss them.
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 
 ANNOUNCE_POLL_INTERVAL_S = 5
 STT_TARGET_SAMPLE_RATE = 16000
@@ -1214,6 +1224,7 @@ class Settings(BaseSettings):
     backend_url: str = "https://api.openai.com/v1"
     backend_model: str = "gpt-4o-mini"
     openai_api_key: Optional[str] = None
+    voice_max_tokens: int = 500  # Cap on AI reply length (OPENCLAW_VOICE_MAX_TOKENS)
     
     # OpenClaw Gateway (auto-detected from OPENCLAW_GATEWAY_URL + TOKEN)
     openclaw_gateway_url: Optional[str] = None
@@ -1280,6 +1291,7 @@ async def startup():
             url=f"{gateway_url}/v1",
             model=f"openclaw:{agent_id}",  # Choose agent via model string
             api_key=gateway_token,
+            max_tokens=settings.voice_max_tokens,
             system_prompt=(
                 "Voice mode: your reply is read aloud by TTS. "
                 "Default to one short sentence. Use a second short sentence only when needed. "
@@ -1296,6 +1308,7 @@ async def startup():
             url=settings.backend_url,
             model=settings.backend_model,
             api_key=settings.openai_api_key or os.getenv("OPENAI_API_KEY"),
+            max_tokens=settings.voice_max_tokens,
         )
     
     # Initialize VAD
