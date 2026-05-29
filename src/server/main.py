@@ -96,6 +96,11 @@ TASK_RESULT_END = "<<<END_UNTRUSTED_CHILD_RESULT>>>"
 WORK_COMMUTE_DESTINATION = "Work destination"
 WORK_COMMUTE_DEFAULT_ORIGIN = "Current location"
 BACKGROUND_RESEARCH_TIMEOUT_S = 180
+# Safety net: if a turn is parked in the "Working on it" pending state for this
+# long with no result delivered and nothing still in flight, unstick the UI so
+# it can never hang on "thinking" forever (e.g. if the gateway task contract
+# drifts again).
+BACKGROUND_PENDING_TIMEOUT_S = 210
 FOREGROUND_STANDBY_AFTER_S = 15
 VOICE_RESULT_NORMAL_MAX_CHARS = 1500
 VOICE_RESULT_NORMAL_MAX_SENTENCES = 10
@@ -588,6 +593,50 @@ async def read_recent_assistant_final_texts(
         return []
 
 
+SESSION_COMPLETION_STATUSES = ("succeeded", "failed")
+
+
+def is_session_completion_task(task: dict, session_owner_key: str) -> bool:
+    """True for a gateway task whose completion should be spoken to this session.
+
+    The gateway records a session-scoped completion task owned by the requesting
+    voice session when a turn delegates work to a subagent and yields. Older
+    builds tagged these with a ``announce:v1:`` sourceId; current builds use a
+    bare run-id, so we match on ownership + status instead. The subagent's own
+    internal task is owned by the subagent session with notify_policy "silent",
+    so it is naturally excluded.
+
+    Both ``succeeded`` and ``failed`` terminal statuses count: a silent failure
+    would otherwise leave the voice UI stuck on "Working on it" until the
+    pending-state safety net fires, which is a much worse UX than just saying
+    "sorry, that one didn't go through".
+    """
+    task_id = task.get("taskId") or task.get("id")
+    owner_key = task.get("ownerKey") or task.get("requesterSessionKey")
+    status = task.get("status")
+    notify_policy = (task.get("notifyPolicy") or "").lower()
+    return bool(
+        task_id
+        and owner_key == session_owner_key
+        and status in SESSION_COMPLETION_STATUSES
+        and notify_policy not in ("", "silent", "not_applicable")
+    )
+
+
+def session_failure_message(task: dict) -> str:
+    """Generate a short, speech-friendly apology for a failed session task."""
+    error = (task.get("error") or "").strip()
+    summary = (task.get("summary") or task.get("progressSummary") or "").strip()
+    # Some failure modes (network blip, rate limit) put a usable short reason
+    # in the error column. Anything longer is gateway/internal noise the user
+    # shouldn't hear verbatim.
+    if error and len(error) <= 120 and "\n" not in error:
+        return f"Sorry, I ran into trouble with that: {error}. Want me to try again?"
+    if summary and len(summary) <= 200:
+        return f"That one didn't go through. {summary}"
+    return "Sorry, I ran into trouble doing that. Want me to try again?"
+
+
 def extract_task_result_text(task_payload: str) -> str:
     """Extract the finished child result from an announce payload."""
     result_text = task_payload
@@ -752,6 +801,8 @@ def detect_voice_intents(text: str) -> set[str]:
         intents.add("email_copy")
     elif lower:
         # Semantic fallback so we do not need to enumerate every phrasing.
+        # Requires an anaphoric/copy object word so future-tense asks like
+        # "email me the news in the morning" stay on the orchestrator path.
         email_action_terms = {
             "send", "email", "mail", "forward", "share", "deliver",
         }
@@ -759,17 +810,13 @@ def detect_voice_intents(text: str) -> set[str]:
             "email", "gmail", "inbox", "mailbox",
         }
         email_object_terms = {
-            "it", "this", "that", "copy", "summary", "answer", "response", "recap", "result",
+            "it", "this", "that", "those", "these", "them",
+            "copy", "summary", "answer", "response", "recap", "result",
         }
         if (
             tokens.intersection(email_action_terms)
             and tokens.intersection(email_target_terms)
-            and (
-                tokens.intersection(email_object_terms)
-                or "to my" in lower
-                or "send me" in lower
-                or "for me" in lower
-            )
+            and tokens.intersection(email_object_terms)
         ):
             intents.add("email_copy")
 
@@ -823,7 +870,10 @@ def should_delay_email_copy_request(text: str, *, has_background_work: bool = Fa
 def extract_compound_email_task_text(text: str) -> Optional[str]:
     """Return the task part from "do X and email it when done" style requests."""
     match = re.search(
-        r"\b(?:and|then|also)?\s*(?:send|email|mail|forward)\b.{0,80}\b(?:email|gmail|inbox|mailbox)\b",
+        r"\b(?:and|then|also)?\s*"
+        r"(?:send|email|mail|forward|share|deliver)\b"
+        r".{0,80}"
+        r"\b(?:email|gmail|inbox|mailbox|me|myself)\b",
         text,
         flags=re.IGNORECASE,
     )
@@ -837,16 +887,18 @@ def extract_compound_email_task_text(text: str) -> Optional[str]:
 
 
 def is_send_copy_to_email_request(text: str) -> bool:
-    """Return true for explicit voice follow-ups asking to email the prior answer."""
+    """Return true for voice follow-ups asking to email the prior answer."""
     lower = text.lower()
     explicit_patterns = (
-        r"\b(send|email|mail|forward)\b.{0,40}\b(copy|summary)\b.{0,40}\b(email|gmail|my inbox)\b",
-        r"\b(send|email|mail|forward)\b.{0,24}\bthat\b.{0,40}\b(email|gmail|my inbox)\b",
-        r"\b(send|email|mail|forward)\b.{0,24}\b(it|this)\b.{0,40}\b(to\b.{0,24})?(email|gmail|my inbox)\b",
-        r"\bsend a copy of that\b",
-        r"\bemail that to my gmail\b",
-        r"\bemail it to my gmail\b",
-        r"\bemail this to my gmail\b",
+        # "send/email/forward [a] copy/summary/recap to my gmail/email/inbox"
+        r"\b(send|email|mail|forward|share|deliver)\b.{0,40}\b(copy|summary|recap)\b.{0,40}\b(email|gmail|inbox|mailbox)\b",
+        # "send/email/forward that/this/it/those/these/them to my email/etc"
+        r"\b(send|email|mail|forward|share|deliver)\b.{0,30}\b(that|this|it|those|these|them)\b.{0,40}\b(to\b.{0,24})?(email|gmail|inbox|mailbox)\b",
+        # "send/email me a copy/summary/that/this/those/these/the last"
+        r"\b(send|email|mail|forward|share)\s+me\b.{0,40}\b(a copy|a summary|a recap|that|this|those|these|it|them|the (last|previous|recent|above))\b",
+        # bare classics
+        r"\bsend a copy of (that|this|it)\b",
+        r"\bemail (that|it|this|those|these) to my (gmail|email|inbox|mailbox)\b",
     )
     if any(re.search(pattern, lower) for pattern in explicit_patterns):
         return True
@@ -1076,6 +1128,28 @@ def is_placeholder_gateway_response(text: str) -> bool:
     }
 
 
+def is_incomplete_voice_answer(text: str) -> bool:
+    """True when a candidate answer looks cut off mid-sentence."""
+    cleaned = clean_for_display(text).strip()
+    if not cleaned:
+        return True
+    if len(cleaned) < 40:
+        return False
+    if cleaned.endswith((".", "!", "?", "”", '"', "'")):
+        return False
+    tail = cleaned.rsplit(maxsplit=1)[-1].lower().strip(",;:")
+    if tail in {
+        "a", "an", "the", "and", "or", "but", "with", "for", "to", "of", "in",
+        "is", "are", "was", "were", "be", "as", "at", "by", "from", "about",
+    }:
+        return True
+    if tail.isdigit():
+        return True
+    # A long answer with no closing punctuation is usually a truncation from
+    # the gateway/model path. Short fragments like "Yes" remain allowed above.
+    return len(cleaned) >= 80
+
+
 def is_nonfinal_background_result(text: str) -> bool:
     """Suppress raw subagent/status payloads until the parent final arrives."""
     sample = clean_for_display(text).strip().lower()
@@ -1291,7 +1365,10 @@ async def startup():
             url=f"{gateway_url}/v1",
             model=f"openclaw:{agent_id}",  # Choose agent via model string
             api_key=gateway_token,
-            max_tokens=settings.voice_max_tokens,
+            # Gateway/tool-backed turns spend output budget on tool use and the
+            # orchestrator wrapper before the short spoken final. Keep a higher
+            # floor here so answers don't get chopped mid-sentence.
+            max_tokens=max(settings.voice_max_tokens, 1200),
             system_prompt=(
                 "Voice mode: your reply is read aloud by TTS. "
                 "Default to one short sentence. Use a second short sentence only when needed. "
@@ -1462,18 +1539,12 @@ async def websocket_endpoint(websocket: WebSocket):
     voice_result_max_sentences = VOICE_RESULT_NORMAL_MAX_SENTENCES
     pending_email_copy_request: Optional[dict] = None
     last_spoken_answer: Optional[str] = None
+    # Monotonic timestamp of when the UI entered the "Working on it" pending
+    # state, or None when not pending. Used by the watcher's safety net.
+    background_pending_since: Optional[float] = None
 
     def is_session_announce_task(task: dict) -> bool:
-        task_id = task.get("taskId") or task.get("id")
-        source_id = task.get("sourceId") or ""
-        owner_key = task.get("ownerKey") or task.get("requesterSessionKey")
-        status = task.get("status")
-        return bool(
-            task_id
-            and source_id.startswith("announce:v1:")
-            and owner_key == session_owner_key
-            and status == "succeeded"
-        )
+        return is_session_completion_task(task, session_owner_key)
 
     async def persist_delivery_state(
         *,
@@ -1641,6 +1712,7 @@ async def websocket_endpoint(websocket: WebSocket):
         """Stream AI text to client; synthesize AAC per-sentence and send immediately."""
         nonlocal voice_result_max_chars, voice_result_max_sentences
         nonlocal pending_email_copy_request, last_spoken_answer
+        nonlocal background_pending_since
         if not transcript.strip():
             return
         voice_result_max_chars, voice_result_max_sentences = voice_result_budget_for_prompt(transcript)
@@ -1703,16 +1775,26 @@ async def websocket_endpoint(websocket: WebSocket):
         )
         sanitizer = StreamSanitizer(strict_final=is_orchestrator_backend)
 
-        async def emit_filtered(text: str) -> None:
+        async def emit_filtered(text: str, *, flush: bool = False) -> None:
+            """Stream ``text`` to the client and TTS, optionally flushing residue.
+
+            When ``flush`` is True, any partial sentence left in the buffer
+            after splitting is shipped immediately. This is what we want for
+            short standalone status utterances (e.g. "I'm still working on
+            that. Please stand by.") so the trailing sentence doesn't sit in
+            the buffer and get glued to the next chunk that arrives — which
+            is what made the standby line lag in front of the final answer.
+            """
             nonlocal full_response, sentence_buffer
-            if not text:
+            if not text and not flush:
                 return
-            full_response += text
-            sentence_buffer += text
-            await websocket.send_json({
-                "type": "response_chunk",
-                "text": text,
-            })
+            if text:
+                full_response += text
+                sentence_buffer += text
+                await websocket.send_json({
+                    "type": "response_chunk",
+                    "text": text,
+                })
             while any(sep in sentence_buffer for sep in SENTENCE_ENDS):
                 earliest_idx = len(sentence_buffer)
                 for sep in SENTENCE_ENDS:
@@ -1725,6 +1807,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 sentence_buffer = sentence_buffer[earliest_idx:]
                 if sentence:
                     await tts_queue.put(sentence)
+            if flush:
+                residue = sentence_buffer.strip()
+                sentence_buffer = ""
+                if residue:
+                    await tts_queue.put(residue)
             # Also flush a sentence that ends with punctuation even when there is
             # no trailing whitespace yet (e.g. "I'll respond when finished.").
             stripped_tail = sentence_buffer.strip()
@@ -1735,7 +1822,11 @@ async def websocket_endpoint(websocket: WebSocket):
         if is_local_time_request(transcript):
             await emit_filtered(build_local_time_response())
             raw_stream_chars = len(full_response)
-        elif wants_email_copy and compound_email_task:
+        elif compound_email_task:
+            # The compound regex (verb + task + target) is strong enough that
+            # its match alone is evidence the user wants X done AND the result
+            # emailed, even if the strict email-copy intent didn't fire (e.g.
+            # "Research X and email me the latest" has no anaphoric object).
             session_path, session_offset = await snapshot_session_offset(session_owner_key)
             pending_email_copy_request = _make_pending_email_copy_request(
                 to_address=load_primary_email_address(),
@@ -1834,7 +1925,15 @@ async def websocket_endpoint(websocket: WebSocket):
                     )
                     foreground_standby_started = True
                     await websocket.send_json({"type": "background_task_started"})
-                    await emit_filtered("Working on it, I'll respond when finished.")
+                    # flush=True so the standby utterance ships to TTS now and
+                    # doesn't sit in the sentence buffer until the final answer
+                    # arrives — otherwise the partial trailing sentence gets
+                    # glued to the next emit and only plays in front of the
+                    # final response.
+                    await emit_filtered(
+                        "Working on it, I'll respond when finished.",
+                        flush=True,
+                    )
                     try:
                         response_text = await asyncio.wait_for(
                             asyncio.shield(response_task),
@@ -1876,16 +1975,34 @@ async def websocket_endpoint(websocket: WebSocket):
                     else None
                 )
 
-                if spoken:
+                if spoken and not is_incomplete_voice_answer(spoken):
+                    background_pending_since = None
                     if foreground_standby_started:
                         await websocket.send_json({"type": "background_task_finished"})
                     await emit_filtered(clean_for_display(spoken))
+                elif spoken:
+                    logger.warning(
+                        "Suppressing incomplete assistant final: {}",
+                        clean_for_display(spoken)[:160],
+                    )
+                    background_pending_since = None
+                    if foreground_standby_started:
+                        await websocket.send_json({"type": "background_task_finished"})
+                    await emit_filtered(
+                        "Sorry, that answer came back cut off. Please ask me again.",
+                        flush=True,
+                    )
                 elif is_placeholder_gateway_response(response_text):
                     logger.info(
                         "Gateway returned placeholder response with no final yet; keeping pending state."
                     )
+                    background_pending_since = time.monotonic()
                     await websocket.send_json({"type": "background_task_started"})
-                elif response_text and not looks_like_reasoning_leak(response_text):
+                elif (
+                    response_text
+                    and not looks_like_reasoning_leak(response_text)
+                    and not is_incomplete_voice_answer(response_text)
+                ):
                     # No <final> block was found in the JSONL (either the
                     # orchestrator chose not to emit one, or we couldn't
                     # reach the file) but the response body itself doesn't
@@ -1896,19 +2013,40 @@ async def websocket_endpoint(websocket: WebSocket):
                     # the strict-final sanitizer here — strict mode would
                     # drop everything when no <final> tag is present and
                     # produce silent dead-air.
+                    background_pending_since = None
                     if foreground_standby_started:
                         await websocket.send_json({"type": "background_task_finished"})
                     await emit_filtered(clean_for_display(response_text))
+                elif response_text and is_incomplete_voice_answer(response_text):
+                    logger.warning(
+                        "Suppressing incomplete gateway response: {}",
+                        clean_for_display(response_text)[:160],
+                    )
+                    background_pending_since = None
+                    if foreground_standby_started:
+                        await websocket.send_json({"type": "background_task_finished"})
+                    await emit_filtered(
+                        "Sorry, that answer came back cut off. Please ask me again.",
+                        flush=True,
+                    )
                 else:
                     # Either the response was empty, or the gateway handed
-                    # us tag-stripped reasoning prose. Refuse to speak it
-                    # and keep any pending UI state instead of leaking.
+                    # us tag-stripped reasoning prose. Refuse to speak the
+                    # leaked internals, but do emit a short recovery message
+                    # so the voice app never looks like it died.
                     if response_text:
                         logger.warning(
                             "Gateway returned {} chars with no <final> block "
                             "and reasoning-leak markers; suppressing spoken fallback.",
                             raw_stream_chars,
                         )
+                    background_pending_since = None
+                    if foreground_standby_started:
+                        await websocket.send_json({"type": "background_task_finished"})
+                    await emit_filtered(
+                        "Sorry, I got tangled up internally and did not produce a clean answer. Please ask me again.",
+                        flush=True,
+                    )
             else:
                 async for chunk in backend.chat_stream(transcript, user_key=session_id):
                     raw_stream_chars += len(chunk)
@@ -1954,7 +2092,7 @@ async def websocket_endpoint(websocket: WebSocket):
         max_sentences: int = VOICE_RESULT_NORMAL_MAX_SENTENCES,
     ):
         """Deliver a completed background-task result directly to the client."""
-        nonlocal last_spoken_answer
+        nonlocal last_spoken_answer, background_pending_since
         display_text = cap_voice_result(
             result_text,
             max_chars=max_chars,
@@ -1974,6 +2112,7 @@ async def websocket_endpoint(websocket: WebSocket):
         if email_confirmation:
             display_text = f"{display_text} {email_confirmation}"
 
+        background_pending_since = None
         await websocket.send_json({"type": "background_task_finished"})
         await websocket.send_json({"type": "assistant_turn_start"})
         await websocket.send_json({
@@ -2005,6 +2144,7 @@ async def websocket_endpoint(websocket: WebSocket):
     async def watch_session_announces():
         """Deliver new background-task completion announcements for this session."""
         nonlocal active_task, pending_email_copy_request, last_spoken_answer
+        nonlocal background_pending_since
 
         state = await read_voice_delivery_state(session_owner_key)
         delivered_announce_task_ids.update(
@@ -2053,6 +2193,45 @@ async def websocket_endpoint(websocket: WebSocket):
 
             if is_listening or (active_task and not active_task.done()):
                 continue
+
+            # Safety net: never let the UI hang on "Working on it" forever.
+            # If we've been pending past the timeout and nothing is still in
+            # flight for this session, unstick the client with a recoverable
+            # message. A real delivery clears background_pending_since first,
+            # so this only fires when delivery genuinely never happened.
+            if (
+                background_pending_since is not None
+                and (time.monotonic() - background_pending_since)
+                > BACKGROUND_PENDING_TIMEOUT_S
+            ):
+                in_flight = any(
+                    (task.get("ownerKey") or task.get("requesterSessionKey"))
+                    == session_owner_key
+                    and str(task.get("status"))
+                    in ("running", "pending", "queued", "started")
+                    for task in await get_tasks()
+                )
+                if not in_flight:
+                    logger.warning(
+                        "Background task pending {:.0f}s with no delivery and "
+                        "nothing in flight; unsticking voice UI.",
+                        time.monotonic() - background_pending_since,
+                    )
+                    background_pending_since = None
+                    active_task = asyncio.create_task(
+                        deliver_task_result(
+                            "I finished that in the background. "
+                            "Tap the mic if you need anything else.",
+                            source_offset=None,
+                        )
+                    )
+                    try:
+                        await active_task
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:
+                        logger.error(f"Pending-timeout recovery failed: {e}")
+                    continue
 
             delivery_failed = False
             delivered_outbox_ids: set[str] = set()
@@ -2120,7 +2299,47 @@ async def websocket_endpoint(websocket: WebSocket):
             new_announces.sort(key=lambda task: task.get("createdAt") or task.get("endedAt") or "")
             for task in new_announces:
                 task_id = task.get("taskId") or task.get("id")
-                payload = (task.get("task") or "").strip()
+                status = task.get("status")
+                if status == "failed":
+                    # The session-scoped task that wraps a delegated subagent
+                    # turn surfaces "failed" when the subagent errors out (e.g.
+                    # FailoverError). Speak a short apology so the UI doesn't
+                    # park on "Working on it" until the pending-state safety
+                    # net fires several minutes later.
+                    failure_text = session_failure_message(task)
+                    logger.info(
+                        f"Delivering session task failure {task_id}: {failure_text[:120]}"
+                    )
+                    # An orphaned "send copy to gmail" pending request can no
+                    # longer be fulfilled by an answer that never landed.
+                    pending_email_copy_request = None
+                    await persist_delivery_state(session_offset=None)
+                    active_task = asyncio.create_task(
+                        deliver_task_result(
+                            failure_text,
+                            source_offset=None,
+                            max_chars=voice_result_max_chars,
+                            max_sentences=voice_result_max_sentences,
+                        )
+                    )
+                    try:
+                        await active_task
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:
+                        logger.error(f"Failure-task delivery failed for {task_id}: {e}")
+                        delivery_failed = True
+                        break
+                    delivered_announce_task_ids.add(task_id)
+                    continue
+                # The completed result lives in the terminal/progress summary;
+                # the "task" column holds the original request, not the answer.
+                payload = (
+                    task.get("summary")
+                    or task.get("progressSummary")
+                    or task.get("task")
+                    or ""
+                ).strip()
                 if not payload:
                     logger.debug(f"Skipping empty announce payload for task {task_id}")
                     delivered_announce_task_ids.add(task_id)
