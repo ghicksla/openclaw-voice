@@ -80,6 +80,11 @@ class TestAIBackend:
         backend = AIBackend()
         assert backend.system_prompt is not None
         assert "voice assistant" in backend.system_prompt.lower()
+
+    def test_max_tokens_default_and_override(self):
+        """max_tokens defaults to 500 and is configurable."""
+        assert AIBackend().max_tokens == 500
+        assert AIBackend(max_tokens=222).max_tokens == 222
     
     def test_clear_history(self):
         """Test conversation history can be cleared."""
