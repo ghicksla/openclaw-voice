@@ -7,6 +7,12 @@ import asyncio
 import numpy as np
 from loguru import logger
 
+try:
+    from .audio_processing import preprocess as _preprocess_audio
+except Exception as e:  # scipy/noisereduce missing — preprocessing is optional
+    _preprocess_audio = None
+    logger.warning(f"Audio preprocessing unavailable, STT will use raw audio: {e}")
+
 
 class WhisperSTT:
     """Whisper-based Speech-to-Text."""
@@ -65,6 +71,11 @@ class WhisperSTT:
     def _transcribe_sync(self, audio: np.ndarray) -> str:
         """Synchronous transcription."""
         if self._backend == "faster-whisper":
+            if _preprocess_audio is not None:
+                try:
+                    audio = _preprocess_audio(audio)
+                except Exception as e:
+                    logger.warning(f"Audio preprocessing failed, using raw audio: {e}")
             segments, info = self.model.transcribe(
                 audio,
                 language=self.language,

@@ -15,6 +15,7 @@ from src.server.stt import WhisperSTT
 from src.server.tts import ChatterboxTTS
 from src.server.backend import AIBackend
 from src.server.vad import VoiceActivityDetector
+from src.server import audio_processing
 
 
 class TestWhisperSTT:
@@ -128,6 +129,38 @@ class TestVAD:
         noise = np.random.randn(16000).astype(np.float32)
         result = vad.is_speech(noise)
         assert isinstance(result, bool)
+
+
+class TestAudioProcessing:
+    """Tests for the STT audio preprocessing pipeline."""
+
+    def test_preprocess_preserves_dtype_and_shape_for_normal_audio(self):
+        """A normal-length clip stays float32 and roughly the same length."""
+        sr = 16000
+        t = np.linspace(0, 1, sr, endpoint=False).astype(np.float32)
+        signal = (0.2 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+        out = audio_processing.preprocess(signal, sr)
+        assert out.dtype == np.float32
+        assert out.ndim == 1
+        assert len(out) > 0
+
+    def test_preprocess_short_audio_is_passthrough(self):
+        """Clips under 250ms are returned untouched (no processing)."""
+        short = np.zeros(1000, dtype=np.float32)
+        out = audio_processing.preprocess(short)
+        assert out is short
+
+    def test_normalize_peaks_to_target(self):
+        """Normalization scales the loudest sample to the target peak."""
+        audio = (np.random.randn(16000).astype(np.float32)) * 0.05
+        out = audio_processing.normalize(audio, target_peak=0.9)
+        assert np.isclose(np.max(np.abs(out)), 0.9, atol=1e-3)
+
+    def test_normalize_leaves_silence_alone(self):
+        """Silence is not amplified (avoids boosting the noise floor)."""
+        silence = np.zeros(16000, dtype=np.float32)
+        out = audio_processing.normalize(silence)
+        assert np.max(np.abs(out)) == 0.0
 
 
 class TestIntegration:
