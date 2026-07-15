@@ -302,6 +302,12 @@ let backgroundTaskPending = false;
 let waveState = 'idle'; // idle | listening | speaking | thinking
 const isSafariLike = /Safari/i.test(navigator.userAgent)
     && !/Chrome|Chromium|CriOS|FxiOS|Edg/i.test(navigator.userAgent);
+// iOS-family detection (covers iPadOS masquerading as macOS). While an iOS
+// device holds an open mic capture, Bluetooth audio (e.g. a car head unit)
+// is forced into the bidirectional hands-free (HFP) route, which cars show
+// as an active phone call. We release the mic between turns on iOS only.
+const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent)
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 let waveAnim = null;
 let micEnergy = 0;
 let waveSmooth = new Float32Array(48);
@@ -991,6 +997,15 @@ async function requestMic() {
     }
 }
 
+// Fully stop microphone capture tracks. On iOS this releases the Bluetooth
+// hands-free (HFP) audio route so car head units drop out of "call" mode and
+// TTS plays over the normal high-quality media (A2DP) route.
+function releaseMic() {
+    if (!mediaStream) return;
+    mediaStream.getTracks().forEach(t => t.stop());
+    mediaStream = null;
+}
+
 // ========== Browser STT ==========
 
 function setupRecognition() {
@@ -1185,7 +1200,12 @@ async function stopRecording(playSignal = true, userInitiated = false) {
     // Always release the record graph before playback. Keeping mic capture open
     // during TTS can force iOS into a lower "play+record" output route.
     if (audioContext) { audioContext.close(); audioContext = null; }
-    // Keep mediaStream alive between turns — re-acquiring the mic breaks Chrome STT.
+    // iOS: stop the mic tracks entirely between turns. An open capture keeps
+    // Bluetooth in the hands-free route, so cars display an active phone call
+    // and TTS plays at phone-call quality. startRecording() reacquires the mic
+    // (permission is already granted, so there's no new prompt).
+    // Other browsers: keep mediaStream alive — re-acquiring breaks Chrome STT.
+    if (isIOS) releaseMic();
 
     let hasSomethingToSend = false;
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -1218,8 +1238,12 @@ async function stopRecording(playSignal = true, userInitiated = false) {
 
 // ========== Event listeners ==========
 
-// Mic permission button
-micPermBtn.addEventListener('click', requestMic);
+// Mic permission button. On iOS, release the capture right after the
+// permission grant — keeping it open would hold Bluetooth in call mode.
+micPermBtn.addEventListener('click', async () => {
+    await requestMic();
+    if (isIOS) releaseMic();
+});
 
 // Hold-to-talk (mouse) + click-to-toggle in continuous mode
 let handledByTouch = false;
@@ -1323,11 +1347,19 @@ renderModeToggle();
 connect();
 
 // Request mic permission immediately — avoids the awkward first-tap dance.
+// On iOS, don't open the mic just for page load: an open capture flips
+// Bluetooth (e.g. car audio) into hands-free "call" mode. Enable the button
+// and let the first tap acquire the mic instead.
 (async () => {
     try {
         const perm = await navigator.permissions.query({ name: 'microphone' });
         if (perm.state === 'granted') {
-            await requestMic();
+            if (isIOS) {
+                voiceBtn.disabled = false;
+                setStatus('Ready');
+            } else {
+                await requestMic();
+            }
         } else if (perm.state === 'prompt') {
             micBanner.classList.add('visible');
         }
