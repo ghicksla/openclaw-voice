@@ -2,54 +2,92 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>OpenClaw Voice</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --color-user-text: #ff6b35;
+            --color-assistant-text: #4fc3f7;
         }
-        
+
+        html, body {
+            height: 100%;
+            height: 100dvh;
+        }
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
             color: #fff;
-            min-height: 100vh;
             display: flex;
             flex-direction: column;
             align-items: center;
-            justify-content: center;
-            padding: 20px;
+            overflow: hidden;
+            -webkit-tap-highlight-color: transparent;
         }
-        
+
         .container {
             max-width: 600px;
             width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
             text-align: center;
+            padding: 16px 20px env(safe-area-inset-bottom, 16px);
+            overflow: hidden;
         }
-        
+
+        /* Header block: title then status stacked */
+        .header-row {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+            margin-bottom: 12px;
+            flex-shrink: 0;
+        }
+
         h1 {
-            font-size: 2.5rem;
-            margin-bottom: 10px;
+            font-size: 2.2rem;
+            font-weight: 700;
             background: linear-gradient(90deg, #ff6b35, #f7c94b);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
+            white-space: nowrap;
         }
-        
-        .subtitle {
-            color: #888;
-            margin-bottom: 40px;
+
+        /* Mic permission banner */
+        .mic-banner {
+            background: rgba(255, 107, 53, 0.12);
+            border: 1px solid rgba(255, 107, 53, 0.3);
+            border-radius: 12px;
+            padding: 16px 20px;
+            margin-bottom: 24px;
+            display: none;
         }
-        
+        .mic-banner.visible { display: block; }
+        .mic-banner p { color: #ff6b35; font-weight: 500; font-size: 0.95rem; }
+        .mic-banner button {
+            margin-top: 10px;
+            padding: 10px 28px;
+            background: #ff6b35;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        /* Voice button */
         .voice-button {
-            width: 150px;
-            height: 150px;
+            width: 120px; height: 120px;
             border-radius: 50%;
             border: none;
             background: linear-gradient(135deg, #ff6b35 0%, #e55a2b 100%);
             color: white;
-            font-size: 1.2rem;
+            font-size: 1.1rem;
             font-weight: 600;
             cursor: pointer;
             transition: all 0.3s ease;
@@ -57,165 +95,125 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            margin: 0 auto 30px;
+            margin: 0 auto 16px;
+            flex-shrink: 0;
+            -webkit-user-select: none;
+            user-select: none;
         }
-        
-        .voice-button:hover {
+        .voice-button:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+        .voice-button:hover:not(:disabled) {
             transform: scale(1.05);
             box-shadow: 0 15px 50px rgba(255, 107, 53, 0.4);
         }
-        
-        .voice-button:active,
+        .voice-button:active:not(:disabled),
         .voice-button.listening {
             transform: scale(0.95);
             background: linear-gradient(135deg, #e55a2b 0%, #c44a22 100%);
         }
-        
-        .voice-button.listening {
-            animation: pulse 1.5s infinite;
-        }
-        
+        .voice-button.listening { animation: pulse 1.5s infinite; }
+
         @keyframes pulse {
             0%, 100% { box-shadow: 0 10px 40px rgba(255, 107, 53, 0.3); }
             50% { box-shadow: 0 10px 60px rgba(255, 107, 53, 0.6); }
         }
-        
-        .continuous-toggle {
+
+        /* Status — sits below title */
+        .status {
+            font-size: 0.9rem;
+            color: #888;
             display: flex;
             align-items: center;
             justify-content: center;
-            gap: 12px;
-            margin-bottom: 20px;
+            gap: 6px;
+            min-height: 20px;
         }
-        
-        .toggle-switch {
-            position: relative;
-            width: 56px;
-            height: 30px;
-        }
-        
-        .toggle-switch input {
-            opacity: 0;
-            width: 0;
-            height: 0;
-        }
-        
-        .toggle-slider {
-            position: absolute;
-            cursor: pointer;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: #333;
-            border-radius: 30px;
-            transition: 0.3s;
-        }
-        
-        .toggle-slider:before {
-            position: absolute;
-            content: "";
-            height: 22px;
-            width: 22px;
-            left: 4px;
-            bottom: 4px;
-            background: white;
-            border-radius: 50%;
-            transition: 0.3s;
-        }
-        
-        .toggle-switch input:checked + .toggle-slider {
-            background: #ff6b35;
-        }
-        
-        .toggle-switch input:checked + .toggle-slider:before {
-            transform: translateX(26px);
-        }
-        
-        .toggle-label {
-            font-weight: 600;
-            color: #fff;
-        }
-        
-        .toggle-hint {
-            color: #666;
-            font-size: 0.85rem;
-        }
-        
-        .status {
-            font-size: 1.1rem;
+        .status.active { color: #ff6b35; }
+        .status.thinking { color: #ff6b35; font-weight: 600; }
+
+        /* Continuous loop icon button */
+        .loop-btn {
+            width: auto;
+            padding: 10px 14px;
+            border: 1px solid #444;
+            background: transparent;
             color: #888;
-            margin-bottom: 20px;
-            min-height: 30px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            line-height: 1;
+            transition: all 0.2s;
+            flex-shrink: 0;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
         }
-        
-        .status.active {
+        .loop-btn svg { width: 18px; height: 18px; display: block; }
+        .loop-btn .mode-label { font-weight: 600; letter-spacing: 0.01em; }
+        .loop-btn:hover { border-color: #ff6b35; color: #ff6b35; }
+        .loop-btn.active {
+            border-color: #ff6b35;
             color: #ff6b35;
+            background: rgba(255, 107, 53, 0.12);
         }
-        
+
+        /* Spinner */
+        .spinner {
+            display: inline-block;
+            width: 18px; height: 18px;
+            border: 2px solid rgba(255, 107, 53, 0.3);
+            border-top-color: #ff6b35;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* Blue waveform visualizer */
+        .waveform-wrap {
+            width: 100%;
+            height: 64px;
+            margin: 4px 0 12px;
+            opacity: 0;
+            transition: opacity 0.15s ease;
+        }
+        .waveform-wrap.visible { opacity: 1; }
+        #waveCanvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        /* Transcript */
         .transcript-box {
             background: rgba(255, 255, 255, 0.05);
             border-radius: 12px;
             padding: 20px;
-            margin-bottom: 20px;
+            margin-bottom: 12px;
             text-align: left;
-            min-height: 100px;
+            flex: 1 1 0;
+            min-height: 80px;
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
         }
-        
         .transcript-box h3 {
-            font-size: 0.9rem;
-            color: #666;
-            margin-bottom: 10px;
-            text-transform: uppercase;
-            letter-spacing: 0.1em;
+            font-size: 0.9rem; color: #666;
+            margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.1em;
         }
-        
-        .transcript-box p {
-            font-size: 1rem;
-            line-height: 1.6;
-            color: #ccc;
-        }
-        
-        .transcript-box p.user {
-            color: #ff6b35;
-        }
-        
-        .transcript-box p.assistant {
-            color: #4fc3f7;
-        }
-        
-        /* Markdown styling */
+        .transcript-box p { font-size: 1rem; line-height: 1.6; color: #ccc; margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid rgba(255,255,255,0.05); }
+        .transcript-box p.user { color: var(--color-user-text); }
+        .transcript-box p.assistant { color: var(--color-assistant-text); }
+        .transcript-box p.preview { color: var(--color-user-text); opacity: 0.6; font-style: italic; }
         .transcript-box code {
             background: rgba(255, 255, 255, 0.1);
-            padding: 2px 6px;
-            border-radius: 4px;
-            font-family: 'SF Mono', Monaco, monospace;
-            font-size: 0.9em;
+            padding: 2px 6px; border-radius: 4px;
+            font-family: 'SF Mono', Monaco, monospace; font-size: 0.9em;
         }
-        
-        .transcript-box code.block {
-            display: block;
-            padding: 10px;
-            margin: 8px 0;
-            background: rgba(0, 0, 0, 0.3);
-        }
-        
-        .transcript-box a {
-            color: #ff6b35;
-            text-decoration: none;
-        }
-        
-        .transcript-box a:hover {
-            text-decoration: underline;
-        }
-        
-        .controls {
-            display: flex;
-            gap: 10px;
-            justify-content: center;
-            margin-top: 20px;
-        }
-        
+        .transcript-box a { color: #ff6b35; text-decoration: none; }
+
+        /* Controls */
+        .controls { display: flex; gap: 10px; justify-content: center; margin-top: 0; flex-shrink: 0; }
         .controls button {
             padding: 10px 20px;
             border: 1px solid #444;
@@ -226,514 +224,1156 @@
             font-size: 0.9rem;
             transition: all 0.2s;
         }
-        
-        .controls button:hover {
-            border-color: #ff6b35;
-            color: #ff6b35;
-        }
-        
-        .error {
-            color: #ff4444;
-            margin-top: 20px;
-        }
-        
-        .instructions {
-            margin-top: 40px;
-            padding: 20px;
-            background: rgba(255, 255, 255, 0.03);
-            border-radius: 12px;
-            color: #666;
-            font-size: 0.9rem;
-        }
-        
-        .instructions code {
-            background: rgba(255, 107, 53, 0.1);
-            color: #ff6b35;
-            padding: 2px 6px;
-            border-radius: 4px;
-        }
+        .controls button:hover { border-color: #ff6b35; color: #ff6b35; }
+
+        .error { color: #ff4444; margin-top: 8px; font-size: 0.85rem; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🎙️ OpenClaw Voice</h1>
-        <p class="subtitle">Self-hosted voice AI interface</p>
-        
-        <button class="voice-button" id="voiceBtn">
+        <div class="header-row">
+            <h1>🦞 OpenClaw Voice</h1>
+            <div class="status" id="status">Connecting...</div>
+        </div>
+
+        <div class="mic-banner" id="micBanner">
+            <p>Microphone access is needed for voice chat.</p>
+            <button id="micPermBtn">Allow Microphone</button>
+        </div>
+
+        <button class="voice-button" id="voiceBtn" disabled>
             Hold to Talk
         </button>
-        
-        <div class="continuous-toggle">
-            <label class="toggle-switch">
-                <input type="checkbox" id="continuousMode">
-                <span class="toggle-slider"></span>
-            </label>
-            <span class="toggle-label">Continuous Mode</span>
-            <span class="toggle-hint">(hands-free, like Grok)</span>
+
+        <div class="waveform-wrap" id="waveWrap">
+            <canvas id="waveCanvas"></canvas>
         </div>
-        
-        <p class="status" id="status">Ready</p>
-        
+
         <div class="transcript-box">
             <h3>Conversation</h3>
             <div id="transcript"></div>
         </div>
-        
+
         <div class="controls">
+            <button id="newChatBtn">New Chat</button>
             <button id="clearBtn">Clear History</button>
+            <button class="loop-btn" id="loopBtn" title="Switch to listening mode" aria-label="Switch to listening mode"></button>
         </div>
-        
+
         <p class="error" id="error"></p>
-        
-        <div class="instructions">
-            <p><strong>Push-to-talk:</strong> Hold the button and speak. Release to send.</p>
-            <p style="margin-top: 10px;"><strong>Continuous mode:</strong> Toggle ON for hands-free. Tap to start, it auto-listens after each response. Perfect for driving! 🚗</p>
-            <p style="margin-top: 10px;">Keyboard: <code>Space</code> to toggle recording.</p>
-        </div>
-        
-        <footer style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #333; font-size: 0.8rem; color: #555;">
-            <p>Built with 🦀 by <a href="https://purplehorizons.io" target="_blank" style="color: #888; text-decoration: none;">Purple Horizons</a></p>
-            <p style="margin-top: 5px;"><a href="https://github.com/Purple-Horizons/openclaw-voice" target="_blank" style="color: #666; text-decoration: none;">GitHub</a> · <a href="https://openclaw.ai" target="_blank" style="color: #666; text-decoration: none;">OpenClaw</a></p>
-        </footer>
     </div>
 
-    <script>
-        const voiceBtn = document.getElementById('voiceBtn');
-        const statusEl = document.getElementById('status');
-        const transcriptEl = document.getElementById('transcript');
-        const errorEl = document.getElementById('error');
-        const clearBtn = document.getElementById('clearBtn');
-        const continuousModeToggle = document.getElementById('continuousMode');
-        
-        let ws = null;
-        let mediaRecorder = null;
-        let audioContext = null;
-        let audioSource = null;
-        let audioProcessor = null;
-        let mediaStream = null;
-        let isRecording = false;
-        let continuousMode = false;
-        let silenceTimer = null;
-        let silenceThreshold = 1500; // ms of silence before stopping
-        
-        // Get API key from URL params or localStorage
-        function getApiKey() {
-            const urlParams = new URLSearchParams(window.location.search);
-            return urlParams.get('api_key') || localStorage.getItem('openclaw_api_key') || '';
+<script>
+// --- DOM refs ---
+const voiceBtn    = document.getElementById('voiceBtn');
+const statusEl    = document.getElementById('status');
+const transcriptEl= document.getElementById('transcript');
+const transcriptBox = document.querySelector('.transcript-box');
+const errorEl     = document.getElementById('error');
+const newChatBtn  = document.getElementById('newChatBtn');
+const clearBtn    = document.getElementById('clearBtn');
+const loopBtn     = document.getElementById('loopBtn');
+const micBanner   = document.getElementById('micBanner');
+const micPermBtn  = document.getElementById('micPermBtn');
+const waveWrap    = document.getElementById('waveWrap');
+const waveCanvas  = document.getElementById('waveCanvas');
+const waveCtx     = waveCanvas.getContext('2d');
+
+// --- State ---
+let ws = null;
+let mediaStream = null;
+let audioContext = null;
+let audioSource = null;
+let audioProcessor = null;
+let silentGain = null;
+let micAnalyser = null;
+let micTimeData = null;
+let micVisualAnim = null;
+let isRecording = false;
+let continuousMode = false;
+// Tracks an explicit user-initiated stop in continuous mode so the auto-restart
+// cycle in onAudioComplete does NOT re-arm listening behind the user's back.
+// Cleared the next time the user manually starts (taps the mic).
+let userPausedContinuous = false;
+let currentResponseElement = null;
+let streamingText = '';
+let modelName = ''; // <- ADDED
+let backgroundTaskPending = false;
+let waveState = 'idle'; // idle | listening | speaking | thinking
+const isSafariLike = /Safari/i.test(navigator.userAgent)
+    && !/Chrome|Chromium|CriOS|FxiOS|Edg/i.test(navigator.userAgent);
+// iOS-family detection (covers iPadOS masquerading as macOS). While an iOS
+// device holds an open mic capture, Bluetooth audio (e.g. a car head unit)
+// is forced into the bidirectional hands-free (HFP) route, which cars show
+// as an active phone call. We release the mic between turns on iOS only.
+const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent)
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+let waveAnim = null;
+let micEnergy = 0;
+let waveSmooth = new Float32Array(48);
+let barTargets = new Float32Array(48);
+let waveHasMicData = false;
+let playbackEnergy = 0;
+let playbackCtx = null;
+let playbackSource = null;
+let playbackAnalyser = null;
+let playbackTimeData = null;
+let playbackDecodeCtx = null;
+let activePlaybackItem = null;
+let activePlaybackStartedAt = 0;
+const rootStyles = getComputedStyle(document.documentElement);
+const waveInputColor = (rootStyles.getPropertyValue('--color-user-text') || '#ff6b35').trim();
+const waveOutputColor = (rootStyles.getPropertyValue('--color-assistant-text') || '#4fc3f7').trim();
+const LOOP_ICON_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>`;
+const WALKIE_ICON_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v3"/><path d="M9 6h6"/><rect x="7" y="7" width="10" height="14" rx="2"/><path d="M10 11h4"/><path d="M10 14h4"/><circle cx="12" cy="18" r="1"/></svg>`;
+
+function renderModeToggle() {
+    const listeningMode = continuousMode;
+    const icon = listeningMode ? LOOP_ICON_SVG : WALKIE_ICON_SVG;
+    const label = listeningMode ? 'Continuous' : 'Hold to talk';
+    const title = listeningMode ? 'Switch to hold-to-talk mode' : 'Switch to listening mode';
+    loopBtn.innerHTML = `${icon}<span class="mode-label">${label}</span>`;
+    loopBtn.title = title;
+    loopBtn.setAttribute('aria-label', title);
+}
+
+function playTone() {
+    // Intentionally disabled: use iPhone-native audio behavior only.
+}
+
+function sizeWaveCanvas() {
+    const rect = waveCanvas.parentElement.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    waveCanvas.width = Math.max(1, Math.floor(rect.width * dpr));
+    waveCanvas.height = Math.max(1, Math.floor(rect.height * dpr));
+    waveCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+function setWaveState(state) {
+    waveState = state;
+    const visible = state !== 'idle';
+    waveWrap.classList.toggle('visible', visible);
+    if (waveAnim) {
+        cancelAnimationFrame(waveAnim);
+        waveAnim = null;
+    }
+    if (visible) {
+        sizeWaveCanvas();
+        animateWave();
+    } else {
+        waveSmooth.fill(0);
+        waveHasMicData = false;
+        const dpr = window.devicePixelRatio || 1;
+        waveCtx.clearRect(0, 0, waveCanvas.width / dpr, waveCanvas.height / dpr);
+    }
+}
+
+function updateWaveTargetsFromMic(raw) {
+    const bars = barTargets.length;
+    const step = Math.max(1, Math.floor(raw.length / bars));
+    let totalE = 0;
+    for (let i = 0; i < bars; i++) {
+        let sum = 0;
+        for (let j = 0; j < step; j++) sum += Math.abs(raw[i * step + j] || 0);
+        barTargets[i] = (sum / step) * 600;
+        totalE += barTargets[i];
+    }
+    micEnergy = totalE / bars;
+    waveHasMicData = true;
+}
+
+function startMicVisualLoop() {
+    if (!micAnalyser || micVisualAnim) return;
+    micTimeData = new Uint8Array(micAnalyser.fftSize);
+    const pcm = new Float32Array(micAnalyser.fftSize);
+
+    const tick = () => {
+        if (!isRecording || !micAnalyser) {
+            micVisualAnim = null;
+            return;
         }
-        
-        // Connect to WebSocket
-        function connect() {
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const apiKey = getApiKey();
-            // Support serving from subdirectory (e.g., /voice)
-            const basePath = window.location.pathname.replace(/\/$/, '');
-            const wsPath = basePath ? `${basePath}/ws` : '/ws';
-            const wsUrl = apiKey 
-                ? `${protocol}//${window.location.host}${wsPath}?api_key=${apiKey}`
-                : `${protocol}//${window.location.host}${wsPath}`;
-            
-            ws = new WebSocket(wsUrl);
-            
-            ws.onopen = () => {
-                setStatus('Connected');
-                errorEl.textContent = '';
-            };
-            
-            ws.onclose = (event) => {
-                if (event.code === 4001) {
-                    setStatus('❌ API key required');
-                    errorEl.textContent = 'This server requires an API key. Add ?api_key=YOUR_KEY to the URL.';
-                } else if (event.code === 4002) {
-                    setStatus('❌ Invalid API key');
-                    errorEl.textContent = 'Your API key is invalid or expired.';
-                } else if (event.code === 4003) {
-                    setStatus('❌ Rate limited');
-                    errorEl.textContent = 'Too many requests. Please wait and try again.';
-                } else {
-                    setStatus('Disconnected - reconnecting...');
-                    setTimeout(connect, 2000);
-                }
-            };
-            
-            ws.onerror = (e) => {
-                errorEl.textContent = 'WebSocket error. Is the server running?';
-            };
-            
-            ws.onmessage = (event) => {
-                const msg = JSON.parse(event.data);
-                handleMessage(msg);
-            };
+        micAnalyser.getByteTimeDomainData(micTimeData);
+        for (let i = 0; i < micTimeData.length; i++) {
+            pcm[i] = ((micTimeData[i] || 128) - 128) / 128;
         }
-        
-        // Audio queue for streaming playback
-        let audioQueue = [];
-        let isPlayingQueue = false;
-        let currentResponseElement = null;
-        let streamingText = '';
-        
-        function handleMessage(msg) {
-            switch (msg.type) {
-                case 'listening_started':
-                    setStatus(continuousMode ? '🎙️ Listening (continuous)...' : 'Listening...', true);
-                    break;
-                case 'listening_stopped':
-                    setStatus('Processing...');
-                    break;
-                case 'transcript':
-                    addTranscript('You', msg.text, 'user');
-                    setStatus('Getting response...');
-                    // Reset streaming state
-                    streamingText = '';
-                    currentResponseElement = null;
-                    audioQueue = [];
-                    break;
-                case 'response_text':
-                    // Legacy non-streaming response
-                    addTranscript('AI', msg.text, 'assistant');
-                    break;
-                case 'response_chunk':
-                    // Streaming text chunk
-                    streamingText += msg.text;
-                    updateStreamingTranscript(streamingText);
-                    setStatus('Speaking...', true);
-                    break;
-                case 'audio_chunk':
-                    // Queue audio chunk for playback
-                    queueAudioChunk(msg.data, msg.sample_rate);
-                    break;
-                case 'response_complete':
-                    // Finalize the response
-                    if (currentResponseElement) {
-                        currentResponseElement.innerHTML = `<strong>AI:</strong> ${renderMarkdown(msg.text)}`;
+        micEnergy = pcm.reduce((s, v) => s + Math.abs(v), 0) / pcm.length;
+        updateWaveTargetsFromMic(pcm);
+        micVisualAnim = requestAnimationFrame(tick);
+    };
+
+    micVisualAnim = requestAnimationFrame(tick);
+}
+
+function stopMicVisualLoop() {
+    if (micVisualAnim) cancelAnimationFrame(micVisualAnim);
+    micVisualAnim = null;
+    micAnalyser = null;
+    micTimeData = null;
+}
+
+function ensurePlaybackAnalyzer() {
+    if (playbackAnalyser) return;
+    // iOS/Safari can route <audio> playback outside Web Audio. Wiring the
+    // element through createMediaElementSource can silence speech output, so
+    // keep iPhone playback on the native <audio> path.
+    if (isSafariLike) return;
+    try {
+        const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+        playbackCtx = new AudioContextCtor();
+        playbackSource = playbackCtx.createMediaElementSource(player);
+        playbackAnalyser = playbackCtx.createAnalyser();
+        playbackAnalyser.fftSize = 1024;
+        playbackTimeData = new Uint8Array(playbackAnalyser.frequencyBinCount);
+        playbackSource.connect(playbackAnalyser);
+        playbackAnalyser.connect(playbackCtx.destination);
+    } catch (e) {
+        console.warn('Playback analyser unavailable:', e);
+    }
+}
+
+function updateWaveTargetsFromPlayback() {
+    if (!playbackAnalyser || !playbackTimeData || !aacPlaying) return false;
+    playbackAnalyser.getByteTimeDomainData(playbackTimeData);
+    const bars = barTargets.length;
+    const step = Math.max(1, Math.floor(playbackTimeData.length / bars));
+    let total = 0;
+    for (let i = 0; i < bars; i++) {
+        let sum = 0;
+        for (let j = 0; j < step; j++) {
+            const v = ((playbackTimeData[i * step + j] || 128) - 128) / 128;
+            sum += Math.abs(v);
+        }
+        barTargets[i] = (sum / step) * 650;
+        total += barTargets[i];
+    }
+    playbackEnergy = total / bars;
+    // Flatline output (all ~128 samples) means the analyser is wired but not
+    // receiving usable speech amplitude. Treat that like "no playback signal"
+    // so the speaking waveform falls back to animated motion instead of
+    // freezing as tiny static bars.
+    if (playbackEnergy < 1.2) return false;
+    return true;
+}
+
+function updateWaveTargetsFromDecodedEnvelope(now) {
+    if (!activePlaybackItem || !activePlaybackItem.envelopeFrames || !activePlaybackStartedAt) return false;
+    const frames = activePlaybackItem.envelopeFrames;
+    const frameCount = activePlaybackItem.envelopeFrameCount || 0;
+    const duration = activePlaybackItem.envelopeDurationSec || 0;
+    const bars = barTargets.length;
+    if (!duration || !frameCount || frames.length === 0) return false;
+
+    const elapsedSec = Math.max(0, (performance.now() - activePlaybackStartedAt) / 1000);
+    const progress = Math.min(1, elapsedSec / duration);
+    const frameIdx = Math.min(frameCount - 1, Math.floor(progress * frameCount));
+    const base = frameIdx * bars;
+
+    let total = 0;
+    for (let i = 0; i < bars; i++) {
+        // Mild gain to match input range while preserving decoded per-bar shape.
+        const v = Math.max(0, Math.min(1, (frames[base + i] || 0) * 1.25));
+        barTargets[i] = v * 600;
+        total += barTargets[i];
+    }
+    playbackEnergy = total / bars;
+    return playbackEnergy > 0.5;
+}
+
+function getPlaybackDecodeContext() {
+    if (playbackDecodeCtx) return playbackDecodeCtx;
+    const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextCtor) return null;
+    playbackDecodeCtx = new AudioContextCtor();
+    return playbackDecodeCtx;
+}
+
+async function buildPlaybackEnvelope(item) {
+    if (!item || !item.bytes || item.envelopeReady) return;
+    item.envelopeReady = true;
+    const ctx = getPlaybackDecodeContext();
+    if (!ctx) return;
+    try {
+        const copied = item.bytes.buffer.slice(item.bytes.byteOffset, item.bytes.byteOffset + item.bytes.byteLength);
+        const audioBuffer = await ctx.decodeAudioData(copied.slice(0));
+        const channels = Math.max(1, audioBuffer.numberOfChannels);
+        const length = audioBuffer.length;
+        const duration = Math.max(0.001, audioBuffer.duration || 0.001);
+        const bars = barTargets.length;
+        const frameCount = Math.max(24, Math.min(720, Math.round(duration * 90)));
+        const frames = new Float32Array(frameCount * bars);
+        let maxVal = 0;
+
+        for (let f = 0; f < frameCount; f++) {
+            const frameStart = Math.floor((f / frameCount) * length);
+            const frameEnd = Math.min(length, Math.floor(((f + 1) / frameCount) * length));
+            const frameLen = Math.max(1, frameEnd - frameStart);
+
+            for (let b = 0; b < bars; b++) {
+                const bStart = frameStart + Math.floor((b / bars) * frameLen);
+                const bEnd = frameStart + Math.floor(((b + 1) / bars) * frameLen);
+                let sum = 0;
+                let samples = 0;
+                for (let c = 0; c < channels; c++) {
+                    const data = audioBuffer.getChannelData(c);
+                    for (let s = bStart; s < bEnd; s++) {
+                        sum += Math.abs(data[s] || 0);
+                        samples++;
                     }
-                    break;
-                case 'audio_response':
-                    // Legacy non-streaming audio
-                    playAudioWithCallback(msg.data, msg.sample_rate, onAudioComplete);
-                    setStatus('Speaking...');
-                    break;
-                case 'pong':
-                    break;
-            }
-        }
-        
-        function updateStreamingTranscript(text) {
-            if (!currentResponseElement) {
-                currentResponseElement = document.createElement('p');
-                currentResponseElement.className = 'assistant';
-                transcriptEl.appendChild(currentResponseElement);
-            }
-            currentResponseElement.innerHTML = `<strong>AI:</strong> ${renderMarkdown(text)}`;
-            transcriptEl.scrollTop = transcriptEl.scrollHeight;
-        }
-        
-        function queueAudioChunk(base64Data, sampleRate) {
-            audioQueue.push({ data: base64Data, sampleRate });
-            if (!isPlayingQueue) {
-                playNextInQueue();
-            }
-        }
-        
-        async function playNextInQueue() {
-            if (audioQueue.length === 0) {
-                isPlayingQueue = false;
-                onAudioComplete();
-                return;
-            }
-            
-            isPlayingQueue = true;
-            const { data, sampleRate } = audioQueue.shift();
-            
-            try {
-                // Decode base64 to PCM
-                const binaryString = atob(data);
-                const bytes = new Uint8Array(binaryString.length);
-                for (let i = 0; i < binaryString.length; i++) {
-                    bytes[i] = binaryString.charCodeAt(i);
                 }
-                
-                // Convert to Int16 then Float32
-                const int16 = new Int16Array(bytes.buffer);
-                const float32 = new Float32Array(int16.length);
-                for (let i = 0; i < int16.length; i++) {
-                    float32[i] = int16[i] / 32768.0;
-                }
-                
-                // Create audio buffer and play
-                const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate });
-                const buffer = audioCtx.createBuffer(1, float32.length, sampleRate);
-                buffer.copyToChannel(float32, 0);
-                
-                const source = audioCtx.createBufferSource();
-                source.buffer = buffer;
-                source.connect(audioCtx.destination);
-                source.onended = () => {
-                    audioCtx.close();
-                    playNextInQueue();
-                };
-                source.start(0);
-            } catch (e) {
-                console.error('Audio playback error:', e);
-                playNextInQueue();
+                const val = samples ? (sum / samples) : 0;
+                const idx = f * bars + b;
+                frames[idx] = val;
+                if (val > maxVal) maxVal = val;
             }
         }
-        
-        function onAudioComplete() {
-            if (continuousMode) {
-                setStatus('🎙️ Ready to listen...', true);
-                setTimeout(() => {
-                    if (continuousMode) startRecording();
-                }, 300);
+
+        if (maxVal > 0) {
+            const scale = 1 / maxVal;
+            for (let i = 0; i < frames.length; i++) {
+                frames[i] = Math.max(0, Math.min(1, frames[i] * scale));
+            }
+        }
+
+        item.envelopeFrames = frames;
+        item.envelopeFrameCount = frameCount;
+        item.envelopeDurationSec = audioBuffer.duration || 0;
+    } catch (e) {
+        // Ignore decode failures and keep fallback animation path.
+    }
+}
+
+function renderWaveBars(width, height, color) {
+    const bars = waveSmooth.length;
+    const gap = 3;
+    const barW = (width - gap * (bars - 1)) / bars;
+    waveCtx.clearRect(0, 0, width, height);
+    waveCtx.fillStyle = color;
+    for (let i = 0; i < bars; i++) {
+        const h = Math.max(2, waveSmooth[i]);
+        const x = i * (barW + gap);
+        const y = (height - h) / 2;
+        waveCtx.fillRect(x, y, barW, h);
+    }
+}
+
+function animateWave() {
+    if (waveState === 'idle') return;
+    const dpr = window.devicePixelRatio || 1;
+    const width = waveCanvas.width / dpr;
+    const height = waveCanvas.height / dpr;
+    const bars = waveSmooth.length;
+    const now = performance.now() / 1000;
+    const hasPlaybackSignal = waveState === 'speaking'
+        ? (updateWaveTargetsFromPlayback() || updateWaveTargetsFromDecodedEnvelope(now))
+        : false;
+
+    for (let i = 0; i < bars; i++) {
+        let target = 4;
+        if (waveState === 'listening') {
+            if (waveHasMicData) {
+                const ripple = micEnergy * (
+                    0.3 * Math.sin(now * 4.5 + i * 0.28)
+                    + 0.2 * Math.sin(now * 7.1 + i * 0.45)
+                    + 0.15 * Math.sin(now * 11 + i * 0.13)
+                );
+                target = Math.min(height - 2, barTargets[i] + ripple);
             } else {
-                setStatus('Ready');
+                target = (0.02 + 0.01 * Math.sin(now * 3 + i * 0.2)) * 600;
+            }
+            waveSmooth[i] += (target - waveSmooth[i]) * 0.2;
+        } else if (waveState === 'speaking') {
+            if (hasPlaybackSignal) {
+                const ripple = playbackEnergy * 0.015 * Math.sin(now * 6 + i * 0.35);
+                target = Math.min(height - 2, barTargets[i] + ripple);
+            } else {
+                // No output signal: decay to flat baseline (same behavior users
+                // expect from the input waveform when silence is present).
+                target = 0;
+            }
+            const follow = target > waveSmooth[i] ? 0.26 : 0.20;
+            waveSmooth[i] += (target - waveSmooth[i]) * follow;
+        } else if (waveState === 'thinking') {
+            // Small spinning lobe sweeps across bars while thinking.
+            const sweepSpeed = 0.45;
+            const sweep = (now * sweepSpeed * bars) % bars;
+            const linearDist = Math.abs(i - sweep);
+            const circularDist = Math.min(linearDist, bars - linearDist);
+            const lobe = Math.max(0, 1 - circularDist / (bars / 2));
+            target = (
+                0.012
+                + 0.035 * lobe
+                + 0.008 * Math.sin(now * 5.4 + i * 0.22)
+                + 0.006 * Math.sin(now * 2.1 + i * 0.11)
+            ) * 600;
+            waveSmooth[i] += (Math.min(height - 2, target) - waveSmooth[i]) * 0.10;
+        } else {
+            target = 0;
+            waveSmooth[i] += (target - waveSmooth[i]) * 0.15;
+        }
+    }
+
+    const color = waveState === 'speaking' || waveState === 'thinking' ? waveOutputColor : waveInputColor;
+    renderWaveBars(width, height, color);
+
+    waveAnim = requestAnimationFrame(animateWave);
+}
+
+sizeWaveCanvas();
+window.addEventListener('resize', sizeWaveCanvas);
+
+// Audio playback via a single persistent <audio> element.
+// iOS Safari needs one user-gesture .play() to "warm" the element;
+// after that, swapping src and calling .play() works without gestures.
+const player = new Audio();
+player.volume = 1;
+let playerWarmedUp = false;
+
+// Audio queue (sentence chunks arrive one at a time, play in order)
+const aacQueue = [];
+let aacPlaying = false;
+let currentBlobUrl = null;
+let needsPreroll = true;
+
+// 250ms silent WAV (8kHz 8-bit mono) — played before the first real audio chunk
+// each turn to wake up iOS audio hardware so the first word isn't clipped.
+const SILENT_PREROLL_WAV = 'data:audio/wav;base64,UklGRvQHAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YdAHAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==';
+
+// Browser-native STT
+const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+const useBrowserSTT = !!SpeechRecognitionCtor;
+let recognition = null;
+let localFinalTranscript = '';
+let localInterimTranscript = '';
+let previewElement = null;
+let finishingRecognition = false;
+let awaitingServerTurn = false;
+
+// ========== Session / persistence ==========
+
+function getSessionId() {
+    let id = localStorage.getItem('openclaw_session_id') || '';
+    if (!id) {
+        id = (window.crypto && window.crypto.randomUUID)
+            ? window.crypto.randomUUID()
+            : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        localStorage.setItem('openclaw_session_id', id);
+    }
+    return id;
+}
+
+function transcriptKey() { return `openclaw_voice_transcript_${getSessionId()}`; }
+function backgroundPendingKey() { return `openclaw_voice_background_pending_${getSessionId()}`; }
+function persistTranscript() { try { localStorage.setItem(transcriptKey(), transcriptEl.innerHTML); } catch {} }
+function restoreTranscript() { try { const h = localStorage.getItem(transcriptKey()); if (h) transcriptEl.innerHTML = h; } catch {} }
+function persistBackgroundPending() {
+    try {
+        if (backgroundTaskPending) localStorage.setItem(backgroundPendingKey(), '1');
+        else localStorage.removeItem(backgroundPendingKey());
+    } catch {}
+}
+function restoreBackgroundPending() {
+    try { backgroundTaskPending = localStorage.getItem(backgroundPendingKey()) === '1'; } catch {}
+}
+function setBackgroundTaskPending(value) {
+    backgroundTaskPending = !!value;
+    persistBackgroundPending();
+}
+function renderBackgroundPendingStatus() {
+    setStatus("Working on it. I'll respond shortly.", 'thinking');
+}
+
+// ========== Audio playback ==========
+
+// "Warm up" the audio element on a user gesture so iOS allows future .play() calls.
+function warmUpPlayer() {
+    if (playerWarmedUp) return;
+    const silentWav = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=';
+    player.src = silentWav;
+    player.play().then(() => {
+        playerWarmedUp = true;
+        ensurePlaybackAnalyzer();
+        if (playbackCtx && playbackCtx.state === 'suspended') playbackCtx.resume().catch(() => {});
+    }).catch(() => {});
+}
+
+function queueAAC(b64, mime) {
+    const raw = atob(b64);
+    const bytes = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+    const item = {
+        mime: mime || 'audio/aac',
+        bytes,
+        envelopeFrames: null,
+        envelopeFrameCount: 0,
+        envelopeDurationSec: 0,
+        envelopeReady: false
+    };
+    aacQueue.push(item);
+    buildPlaybackEnvelope(item);
+    if (!aacPlaying) drainAACQueue();
+}
+
+function drainAACQueue() {
+    if (aacQueue.length === 0) { aacPlaying = false; onAudioComplete(); return; }
+    aacPlaying = true;
+    ensurePlaybackAnalyzer();
+    if (playbackCtx && playbackCtx.state === 'suspended') playbackCtx.resume().catch(() => {});
+    setStatus('Speaking...', 'active');
+
+    if (needsPreroll) {
+        needsPreroll = false;
+        activePlaybackItem = null;
+        activePlaybackStartedAt = 0;
+        player.onended = () => drainAACQueue();
+        player.onerror = () => drainAACQueue();
+        player.src = SILENT_PREROLL_WAV;
+        player.play().catch(() => drainAACQueue());
+        return;
+    }
+
+    const item = aacQueue.shift();
+    if (!item) { aacPlaying = false; onAudioComplete(); return; }
+    const mime = item.mime || 'audio/aac';
+    if (currentBlobUrl) { URL.revokeObjectURL(currentBlobUrl); currentBlobUrl = null; }
+
+    const blob = new Blob([item.bytes], { type: mime });
+    currentBlobUrl = URL.createObjectURL(blob);
+    activePlaybackItem = item;
+    activePlaybackStartedAt = 0;
+
+    player.onended = () => drainAACQueue();
+    player.onerror = () => { console.error('Audio play error'); drainAACQueue(); };
+    player.src = currentBlobUrl;
+    // For iOS first-word clipping: wait a tiny bit for the audio hardware to fully wake up
+    setTimeout(() => {
+        activePlaybackStartedAt = performance.now();
+        player.play().catch(() => drainAACQueue());
+    }, 60);
+}
+
+function flushAACQueue() {
+    aacQueue.length = 0;
+    aacPlaying = false;
+    activePlaybackItem = null;
+    activePlaybackStartedAt = 0;
+    needsPreroll = true;
+    player.onended = null;
+    player.onerror = null;
+    try { player.pause(); player.removeAttribute('src'); } catch {}
+    if (currentBlobUrl) { URL.revokeObjectURL(currentBlobUrl); currentBlobUrl = null; }
+}
+
+function onAudioComplete() {
+    if (backgroundTaskPending) {
+        renderBackgroundPendingStatus();
+        return;
+    }
+    if (continuousMode) {
+        if (userPausedContinuous) {
+            setStatus('Paused — tap mic to resume', '');
+            return;
+        }
+        userPausedContinuous = true;
+        setStatus('Ready — tap mic for next turn', 'active');
+    } else {
+        setStatus('Ready');
+    }
+}
+
+// ========== Status display ==========
+
+function formatModelLabel(raw) {
+    if (!raw) return '';
+    // Extract the part after the last "/" (e.g. "google/gemini-2.5-pro" → "gemini-2.5-pro")
+    const name = raw.includes('/') ? raw.split('/').pop() : raw;
+    // Split on hyphens, title-case each word, rejoin with spaces
+    // Keep numeric segments lowercase so "4-6" stays "4.6"-adjacent
+    return name
+        .split('-')
+        .map(w => /^\d/.test(w) ? w : w.charAt(0).toUpperCase() + w.slice(1))
+        .join(' ');
+}
+
+function setStatus(text, mode) {
+    // Pre-emptively add model name to ready states.
+    if (text.startsWith('Ready') && modelName) {
+        text = `Ready (${modelName})`;
+    }
+
+    if (mode === 'thinking') {
+        statusEl.className = 'status thinking';
+        statusEl.innerHTML = `<span class="spinner"></span> ${escapeHtml(text || 'Thinking')}`;
+    } else if (mode === 'active') {
+        statusEl.className = 'status active';
+        statusEl.textContent = text;
+    } else {
+        statusEl.className = 'status';
+        statusEl.textContent = text;
+    }
+
+    const lower = (text || '').toLowerCase();
+    if (mode === 'thinking') setWaveState('thinking');
+    else if (lower.includes('speaking')) setWaveState('speaking');
+    else if (lower.includes('listening')) setWaveState('listening');
+    else if (lower.startsWith('ready') || lower.startsWith('paused') || lower.includes('disconnected')) setWaveState('idle');
+}
+
+// ========== Transcript helpers ==========
+
+function escapeHtml(t) { const d = document.createElement('div'); d.textContent = t; return d.innerHTML; }
+
+function renderMarkdown(text) {
+    // Strip <think>…</think> blocks and malformed/dangling think tags before display.
+    text = text.replace(/<think>[\s\S]*?<\/think>/gi, '');
+    text = text.replace(/<\/?think\b[^>]*>/gi, '');
+    text = text.replace(/<think[^\n]*/gi, '');
+    text = text.replace(/<\/think[^\n]*/gi, '');
+    text = text.replace(/^\s*\|.*$/gm, '');
+    // Escape HTML so stray < > don't get eaten by the browser.
+    text = escapeHtml(text);
+    return text
+        .replace(/```[\s\S]*?```/g, '<code>code</code>')
+        .replace(/`([^`]+)`/g, '<code>$1</code>')
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+        .replace(/^#{1,3}\s+(.+)$/gm, '<strong>$1</strong>')
+        .replace(/\n/g, '<br>');
+}
+
+function addTranscript(speaker, text, cls) {
+    const p = document.createElement('p');
+    p.className = cls;
+    const rendered = cls === 'assistant' ? renderMarkdown(text) : escapeHtml(text);
+    p.innerHTML = `<strong>${speaker}:</strong> ${rendered}`;
+    transcriptEl.prepend(p);
+    transcriptBox.scrollTop = 0;
+    persistTranscript();
+}
+
+function showPreview(text) {
+    if (!text) return;
+    if (!previewElement) {
+        previewElement = document.createElement('p');
+        previewElement.className = 'preview';
+        transcriptEl.prepend(previewElement);
+    }
+    previewElement.innerHTML = `<strong>You:</strong> ${escapeHtml(text)}`;
+    transcriptBox.scrollTop = 0;
+}
+
+function clearPreview() {
+    if (previewElement) { previewElement.remove(); previewElement = null; }
+}
+
+function updateStreamingResponse(text) {
+    if (!currentResponseElement) {
+        currentResponseElement = document.createElement('p');
+        currentResponseElement.className = 'assistant';
+        transcriptEl.prepend(currentResponseElement);
+    }
+    currentResponseElement.innerHTML = `<strong>AI:</strong> ${renderMarkdown(text)}`;
+    transcriptBox.scrollTop = 0;
+    persistTranscript();
+}
+
+function beginAssistantTurn() {
+    streamingText = '';
+    currentResponseElement = null;
+    flushAACQueue();
+}
+
+// ========== WebSocket ==========
+
+function connect() {
+    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const basePath = location.pathname.replace(/\/$/, '');
+    const wsPath = basePath ? `${basePath}/ws` : '/ws';
+    const params = new URLSearchParams();
+    const sessionId = getSessionId();
+    params.set('session_id', sessionId);
+    const apiKey = new URLSearchParams(location.search).get('api_key') || localStorage.getItem('openclaw_api_key') || '';
+    if (apiKey) params.set('api_key', apiKey);
+    ws = new WebSocket(`${protocol}//${location.host}${wsPath}?${params}`);
+
+    ws.onopen = () => {
+        if (backgroundTaskPending) renderBackgroundPendingStatus();
+        else if (mediaStream) setStatus('Ready');
+        else setStatus('Ready — tap mic to start');
+        errorEl.textContent = '';
+    };
+    ws.onclose = (e) => {
+        if ([4001,4002,4003].includes(e.code)) {
+            setStatus('❌ ' + (e.reason || 'Connection refused'));
+        } else {
+            if (backgroundTaskPending) {
+                setStatus("Researching in background — reconnecting...", 'thinking');
+            } else {
+                setStatus('Disconnected — reconnecting...');
+            }
+            setTimeout(connect, 2000);
+        }
+    };
+    ws.onerror = () => { errorEl.textContent = 'WebSocket error. Is the server running?'; };
+    ws.onmessage = (e) => handleMessage(JSON.parse(e.data));
+}
+
+function handleMessage(msg) {
+    switch (msg.type) {
+        case 'session_info':
+            modelName = formatModelLabel(msg.display_model || msg.model || '');
+            if (backgroundTaskPending) renderBackgroundPendingStatus();
+            else setStatus('Ready'); // Re-set status to update with model name
+            break;
+        case 'background_task_started':
+            setBackgroundTaskPending(true);
+            renderBackgroundPendingStatus();
+            break;
+        case 'background_task_finished':
+            setBackgroundTaskPending(false);
+            break;
+        case 'listening_started':
+            setStatus(continuousMode ? '🎙️ Listening (continuous)...' : '🎙️ Listening...', 'active');
+            break;
+        case 'listening_stopped':
+            if (awaitingServerTurn) {
+                awaitingServerTurn = false;
+                setStatus('Thinking...', 'thinking');
+            }
+            break;
+        case 'assistant_turn_start':
+            beginAssistantTurn();
+            break;
+        case 'transcript':
+            // Server echoes user text. If browser STT already rendered a bubble, skip it.
+            if (!useBrowserSTT || !previewElement) addTranscript('You', msg.text, 'user');
+            setStatus('Thinking...', 'thinking');
+            beginAssistantTurn();
+            break;
+        case 'no_speech':
+            awaitingServerTurn = false;
+            clearPreview();
+            userPausedContinuous = true;
+            setStatus('I didn’t catch that — tap mic and try again', '');
+            break;
+        case 'response_chunk':
+            streamingText += msg.text;
+            updateStreamingResponse(streamingText);
+            break;
+        case 'audio_aac':
+            queueAAC(msg.data, msg.mime);
+            break;
+        case 'response_complete':
+            if (currentResponseElement) {
+                currentResponseElement.innerHTML = `<strong>AI:</strong> ${renderMarkdown(msg.text)}`;
+            }
+            persistTranscript();
+            if (!aacPlaying && aacQueue.length === 0) onAudioComplete();
+            break;
+        case 'response_text':
+            addTranscript('AI', msg.text, 'assistant');
+            break;
+        case 'pong':
+            break;
+    }
+}
+
+// ========== Microphone ==========
+
+async function requestMic() {
+    try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+            audio: isSafariLike
+                ? { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+                : { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true }
+        });
+        micBanner.classList.remove('visible');
+        voiceBtn.disabled = false;
+        setStatus('Ready');
+        warmUpPlayer();
+        return true;
+    } catch (err) {
+        errorEl.textContent = `Mic access denied: ${err.message}`;
+        return false;
+    }
+}
+
+// Fully stop microphone capture tracks. On iOS this releases the Bluetooth
+// hands-free (HFP) audio route so car head units drop out of "call" mode and
+// TTS plays over the normal high-quality media (A2DP) route.
+function releaseMic() {
+    if (!mediaStream) return;
+    mediaStream.getTracks().forEach(t => t.stop());
+    mediaStream = null;
+}
+
+// ========== Browser STT ==========
+
+function setupRecognition() {
+    if (!useBrowserSTT) return;
+    recognition = new SpeechRecognitionCtor();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+
+    recognition.onresult = (event) => {
+        if (!isRecording && !finishingRecognition) return;
+        let fin = '', interim = '';
+        for (let i = 0; i < event.results.length; i++) {
+            const t = event.results[i][0]?.transcript || '';
+            if (event.results[i].isFinal) fin += t + ' ';
+            else interim += t + ' ';
+        }
+        localFinalTranscript = fin.trim();
+        localInterimTranscript = interim.trim();
+        const preview = localFinalTranscript || localInterimTranscript;
+        if (preview) showPreview(preview);
+    };
+    recognition.onerror = () => {};
+    recognition.onend = () => {
+        if (isRecording && recognition) { try { recognition.start(); } catch {} }
+    };
+}
+
+function currentBrowserTranscript() {
+    return (localFinalTranscript || localInterimTranscript).trim();
+}
+
+function float32ToBase64(samples) {
+    const pcm = samples instanceof Float32Array ? samples.slice() : new Float32Array(samples);
+    const bytes = new Uint8Array(pcm.buffer);
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin);
+}
+
+function stopRecognitionAndWaitForTranscript() {
+    if (!recognition) return Promise.resolve(currentBrowserTranscript());
+
+    finishingRecognition = true;
+    const activeRecognition = recognition;
+
+    return new Promise((resolve) => {
+        let settled = false;
+        const finish = () => {
+            if (settled) return;
+            settled = true;
+            try { activeRecognition.onend = null; } catch {}
+            try { activeRecognition.onerror = null; } catch {}
+            recognition = null;
+            finishingRecognition = false;
+            resolve(currentBrowserTranscript());
+        };
+
+        const priorOnResult = activeRecognition.onresult;
+        activeRecognition.onresult = (event) => {
+            if (priorOnResult) priorOnResult(event);
+            if (currentBrowserTranscript()) setTimeout(finish, 50);
+        };
+        activeRecognition.onerror = () => finish();
+        activeRecognition.onend = () => finish();
+
+        try { activeRecognition.stop(); } catch { finish(); }
+        setTimeout(finish, 1500);
+    });
+}
+
+// ========== Recording ==========
+
+let lastSoundTime = 0;
+let _fromContinuousRestart = false;
+let heardSpeech = false;
+let recordingStartedAt = 0;
+
+async function startRecording(fromContinuousRestart) {
+    if (isRecording) return;
+    _fromContinuousRestart = !!fromContinuousRestart;
+    if (!_fromContinuousRestart) {
+        // User manually started listening — clear any prior explicit pause
+        // so onAudioComplete is allowed to chain again in continuous mode.
+        userPausedContinuous = false;
+    }
+
+    if (!mediaStream) {
+        const ok = await requestMic();
+        if (!ok) return;
+    }
+
+    warmUpPlayer();
+    localFinalTranscript = '';
+    localInterimTranscript = '';
+    clearPreview();
+
+    if (!audioContext || audioContext.state === 'closed') {
+        const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+        audioContext = isSafariLike ? new AudioContextCtor() : new AudioContextCtor({ sampleRate: 16000 });
+    }
+    if (audioContext.state === 'suspended') await audioContext.resume();
+    audioSource = audioContext.createMediaStreamSource(mediaStream);
+    micAnalyser = audioContext.createAnalyser();
+    micAnalyser.fftSize = 512;
+    audioProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+    silentGain = audioContext.createGain();
+    silentGain.gain.value = 0;
+
+    lastSoundTime = Date.now();
+    recordingStartedAt = Date.now();
+    heardSpeech = false;
+    audioProcessor.onaudioprocess = (e) => {
+        if (!isRecording) return;
+        const data = e.inputBuffer.getChannelData(0);
+        if (waveState !== 'listening') setWaveState('listening');
+        micEnergy = data.reduce((s, v) => s + Math.abs(v), 0) / data.length;
+        updateWaveTargetsFromMic(data);
+
+        // Always buffer audio on the server so we can fall back when browser STT is empty.
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'audio', data: float32ToBase64(data) }));
+        }
+
+        if (continuousMode) {
+            const energy = micEnergy;
+            const now = Date.now();
+            if (energy > 0.015) {
+                lastSoundTime = now;
+                heardSpeech = true;
+            } else if (heardSpeech && now - lastSoundTime > 2000) {
+                stopRecording();
+            } else if (!heardSpeech && now - recordingStartedAt > 6000) {
+                stopRecording();
+            } else if (now - recordingStartedAt > 15000) {
+                stopRecording();
             }
         }
-        
-        function setStatus(text, active = false) {
-            statusEl.textContent = text;
-            statusEl.className = active ? 'status active' : 'status';
-        }
-        
-        function addTranscript(speaker, text, className) {
-            const p = document.createElement('p');
-            p.className = className;
-            // Render markdown for assistant responses
-            const renderedText = className === 'assistant' ? renderMarkdown(text) : escapeHtml(text);
-            p.innerHTML = `<strong>${speaker}:</strong> ${renderedText}`;
-            transcriptEl.appendChild(p);
-            transcriptEl.scrollTop = transcriptEl.scrollHeight;
-        }
-        
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
-        }
-        
-        function renderMarkdown(text) {
-            // Simple markdown renderer
-            return text
-                // Code blocks
-                .replace(/```[\s\S]*?```/g, '<code class="block">code</code>')
-                // Inline code
-                .replace(/`([^`]+)`/g, '<code>$1</code>')
-                // Bold
-                .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-                // Italic
-                .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-                // Headers (convert to bold)
-                .replace(/^#{1,3}\s+(.+)$/gm, '<strong>$1</strong>')
-                // Links
-                .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>')
-                // Line breaks
-                .replace(/\n/g, '<br>');
-        }
-        
-        // Audio recording
-        async function startRecording() {
-            if (isRecording) return;
-            
-            try {
-                // Reuse stream if available, otherwise get new one
-                if (!mediaStream) {
-                    mediaStream = await navigator.mediaDevices.getUserMedia({ 
-                        audio: {
-                            sampleRate: 16000,
-                            channelCount: 1,
-                            echoCancellation: true,
-                            noiseSuppression: true,
-                        }
-                    });
-                }
-                
-                audioContext = new AudioContext({ sampleRate: 16000 });
-                audioSource = audioContext.createMediaStreamSource(mediaStream);
-                audioProcessor = audioContext.createScriptProcessor(4096, 1, 1);
-                
-                let lastSoundTime = Date.now();
-                
-                audioProcessor.onaudioprocess = (e) => {
-                    if (isRecording && ws && ws.readyState === WebSocket.OPEN) {
-                        const audioData = e.inputBuffer.getChannelData(0);
-                        const base64 = float32ToBase64(audioData);
-                        ws.send(JSON.stringify({ type: 'audio', data: base64 }));
-                        
-                        // Simple VAD: check if audio has energy
-                        if (continuousMode) {
-                            const energy = audioData.reduce((sum, val) => sum + Math.abs(val), 0) / audioData.length;
-                            if (energy > 0.01) {
-                                lastSoundTime = Date.now();
-                            } else if (Date.now() - lastSoundTime > silenceThreshold) {
-                                // Silence detected - stop recording
-                                stopRecording();
-                            }
-                        }
-                    }
-                };
-                
-                audioSource.connect(audioProcessor);
-                audioProcessor.connect(audioContext.destination);
-                
-                isRecording = true;
-                voiceBtn.classList.add('listening');
-                voiceBtn.textContent = continuousMode ? '🎙️ Listening...' : 'Listening...';
-                
-                ws.send(JSON.stringify({ type: 'start_listening' }));
-                
-            } catch (err) {
-                errorEl.textContent = `Microphone error: ${err.message}`;
-            }
-        }
-        
-        function stopRecording() {
-            if (!isRecording) return;
-            
-            isRecording = false;
-            voiceBtn.classList.remove('listening');
-            voiceBtn.textContent = continuousMode ? 'Tap to Talk' : 'Hold to Talk';
-            
-            // Disconnect processor but keep stream for continuous mode
-            if (audioProcessor) {
-                audioProcessor.disconnect();
-                audioProcessor = null;
-            }
-            if (audioSource) {
-                audioSource.disconnect();
-                audioSource = null;
-            }
-            if (audioContext) {
-                audioContext.close();
-                audioContext = null;
-            }
-            
-            // Only release stream if not in continuous mode
-            if (!continuousMode && mediaStream) {
-                mediaStream.getTracks().forEach(track => track.stop());
-                mediaStream = null;
-            }
-            
-            if (ws && ws.readyState === WebSocket.OPEN) {
+    };
+
+    audioSource.connect(audioProcessor);
+    audioSource.connect(micAnalyser);
+    // Safari needs ScriptProcessor connected to the graph, but not audible.
+    audioProcessor.connect(silentGain);
+    silentGain.connect(audioContext.destination);
+
+    isRecording = true;
+    setWaveState('listening');
+    startMicVisualLoop();
+    voiceBtn.classList.add('listening');
+    voiceBtn.textContent = '🎙️ Listening...';
+    // Browser STT path does not emit server "listening_started", so set
+    // listening status locally to drive the input waveform state.
+    setStatus(continuousMode ? '🎙️ Listening (continuous)...' : '🎙️ Listening...', 'active');
+    playTone();
+
+    if (useBrowserSTT) {
+        setupRecognition();
+        if (recognition) try { recognition.start(); } catch {}
+    }
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+            type: 'start_listening',
+            sample_rate: audioContext ? audioContext.sampleRate : 16000,
+        }));
+    }
+}
+
+async function stopRecording(playSignal = true, userInitiated = false) {
+    if (!isRecording) return;
+    isRecording = false;
+    if (userInitiated && continuousMode) {
+        // Break the continuous-mode auto-restart cycle. onAudioComplete will
+        // see this flag and refuse to re-arm listening until the user taps
+        // the mic again, even if a delayed TTS chunk finishes after the tap.
+        userPausedContinuous = true;
+    }
+    voiceBtn.classList.remove('listening');
+    voiceBtn.textContent = continuousMode ? 'Tap to Talk' : 'Hold to Talk';
+
+    stopMicVisualLoop();
+
+    // Finish browser STT before tearing down the mic — closing the stream first
+    // causes Chrome to return an empty transcript on later turns.
+    const browserTranscript = useBrowserSTT
+        ? await stopRecognitionAndWaitForTranscript()
+        : '';
+
+    if (audioProcessor) { audioProcessor.disconnect(); audioProcessor = null; }
+    if (silentGain) { silentGain.disconnect(); silentGain = null; }
+    if (audioSource) { audioSource.disconnect(); audioSource = null; }
+    // Always release the record graph before playback. Keeping mic capture open
+    // during TTS can force iOS into a lower "play+record" output route.
+    if (audioContext) { audioContext.close(); audioContext = null; }
+    // iOS: stop the mic tracks entirely between turns. An open capture keeps
+    // Bluetooth in the hands-free route, so cars display an active phone call
+    // and TTS plays at phone-call quality. startRecording() reacquires the mic
+    // (permission is already granted, so there's no new prompt).
+    // Other browsers: keep mediaStream alive — re-acquiring breaks Chrome STT.
+    if (isIOS) releaseMic();
+
+    let hasSomethingToSend = false;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        if (useBrowserSTT) {
+            const finalText = (browserTranscript || currentBrowserTranscript()).trim();
+            clearPreview();
+            if (finalText) {
+                hasSomethingToSend = true;
+                addTranscript('You', finalText, 'user');
+                beginAssistantTurn();
+                setStatus('Thinking...', 'thinking');
+                ws.send(JSON.stringify({ type: 'cancel_listening' }));
+                ws.send(JSON.stringify({ type: 'text_input', text: finalText }));
+            } else {
+                hasSomethingToSend = true;
+                awaitingServerTurn = true;
+                setStatus('Transcribing...', 'thinking');
                 ws.send(JSON.stringify({ type: 'stop_listening' }));
             }
+        } else {
+            hasSomethingToSend = true;
+            awaitingServerTurn = true;
+            setStatus('Transcribing...', 'thinking');
+            ws.send(JSON.stringify({ type: 'stop_listening' }));
         }
-        
-        // Audio playback
-        function playAudio(base64Data, sampleRate) {
-            playAudioWithCallback(base64Data, sampleRate, null);
+    }
+
+    if (playSignal) playTone();
+}
+
+// ========== Event listeners ==========
+
+// Mic permission button. On iOS, release the capture right after the
+// permission grant — keeping it open would hold Bluetooth in call mode.
+micPermBtn.addEventListener('click', async () => {
+    await requestMic();
+    if (isIOS) releaseMic();
+});
+
+// Hold-to-talk (mouse) + click-to-toggle in continuous mode
+let handledByTouch = false;
+voiceBtn.addEventListener('mousedown', (e) => {
+    if (handledByTouch) return;
+    if (e.button !== 0) return;
+    if (continuousMode) {
+        if (isRecording) stopRecording(true, true);
+        else startRecording();
+        return;
+    }
+    startRecording();
+});
+voiceBtn.addEventListener('mouseup', () => {
+    if (handledByTouch) return;
+    if (!continuousMode) stopRecording(false);
+});
+voiceBtn.addEventListener('mouseleave', () => {
+    if (handledByTouch) return;
+    if (!continuousMode && isRecording) stopRecording(false);
+});
+
+// Hold-to-talk (touch — iOS) + tap-to-toggle in continuous mode
+voiceBtn.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    handledByTouch = true;
+    warmUpPlayer();
+    if (continuousMode) {
+        if (isRecording) stopRecording(true, true);
+        else startRecording();
+        return;
+    }
+    startRecording();
+}, { passive: false });
+voiceBtn.addEventListener('touchend', (e) => {
+    e.preventDefault();
+    if (!continuousMode) stopRecording(false);
+    setTimeout(() => { handledByTouch = false; }, 120);
+}, { passive: false });
+
+// Spacebar
+document.addEventListener('keydown', (e) => {
+    if (e.code === 'Space' && !e.repeat && document.activeElement?.tagName !== 'INPUT') {
+        e.preventDefault();
+        if (isRecording) stopRecording(true, true);
+        else startRecording();
+    }
+});
+
+// Clear / New Chat
+clearBtn.addEventListener('click', () => { transcriptEl.innerHTML = ''; persistTranscript(); });
+newChatBtn.addEventListener('click', () => {
+    try { localStorage.removeItem(backgroundPendingKey()); } catch {}
+    backgroundTaskPending = false;
+    try { localStorage.removeItem(transcriptKey()); } catch {}
+    const newId = (window.crypto && window.crypto.randomUUID)
+        ? window.crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    localStorage.setItem('openclaw_session_id', newId);
+    if (isRecording) stopRecording(true, true);
+    transcriptEl.innerHTML = '';
+    streamingText = '';
+    currentResponseElement = null;
+    flushAACQueue();
+    persistTranscript();
+    try { if (ws) { ws.onclose = null; ws.close(); } } catch {}
+    ws = null;
+    connect();
+});
+
+// Continuous mode toggle (loop icon button)
+loopBtn.addEventListener('click', () => {
+    continuousMode = !continuousMode;
+    userPausedContinuous = false;
+    loopBtn.classList.toggle('active', continuousMode);
+    voiceBtn.textContent = continuousMode ? 'Listening Mode' : 'Hold to Talk';
+    renderModeToggle();
+    if (continuousMode) {
+        playTone();
+        setStatus('🎙️ Continuous mode — tap to start', 'active');
+        if (!mediaStream) requestMic();
+    } else {
+        if (isRecording) stopRecording();
+        else playTone();
+        setStatus('Ready');
+        if (audioContext && audioContext.state !== 'closed') {
+            audioContext.close(); audioContext = null;
         }
-        
-        function playAudioWithCallback(base64Data, sampleRate, callback) {
-            const audioCtx = new AudioContext({ sampleRate: sampleRate });
-            const audioData = base64ToFloat32(base64Data);
-            const buffer = audioCtx.createBuffer(1, audioData.length, sampleRate);
-            buffer.getChannelData(0).set(audioData);
-            
-            const source = audioCtx.createBufferSource();
-            source.buffer = buffer;
-            source.connect(audioCtx.destination);
-            
-            if (callback) {
-                source.onended = callback;
-            }
-            
-            source.start();
+        if (mediaStream && !isRecording) {
+            mediaStream.getTracks().forEach(t => t.stop());
+            mediaStream = null;
         }
-        
-        // Utilities
-        function float32ToBase64(float32Array) {
-            const bytes = new Uint8Array(float32Array.buffer);
-            let binary = '';
-            for (let i = 0; i < bytes.length; i++) {
-                binary += String.fromCharCode(bytes[i]);
-            }
-            return btoa(binary);
-        }
-        
-        function base64ToFloat32(base64) {
-            const binary = atob(base64);
-            const bytes = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) {
-                bytes[i] = binary.charCodeAt(i);
-            }
-            return new Float32Array(bytes.buffer);
-        }
-        
-        // Event listeners
-        voiceBtn.addEventListener('mousedown', () => {
-            if (!continuousMode) startRecording();
-        });
-        voiceBtn.addEventListener('mouseup', () => {
-            if (!continuousMode) stopRecording();
-        });
-        voiceBtn.addEventListener('mouseleave', () => {
-            if (!continuousMode) stopRecording();
-        });
-        voiceBtn.addEventListener('touchstart', (e) => { 
-            e.preventDefault(); 
-            if (!continuousMode) startRecording();
-        });
-        voiceBtn.addEventListener('touchend', () => {
-            if (!continuousMode) stopRecording();
-        });
-        
-        // Tap for continuous mode
-        voiceBtn.addEventListener('click', () => {
-            if (continuousMode) {
-                if (isRecording) {
-                    stopRecording();
-                } else {
-                    startRecording();
-                }
-            }
-        });
-        
-        // Spacebar to toggle
-        document.addEventListener('keydown', (e) => {
-            if (e.code === 'Space' && !e.repeat) {
-                e.preventDefault();
-                if (isRecording) {
-                    stopRecording();
-                } else {
-                    startRecording();
-                }
-            }
-        });
-        
-        clearBtn.addEventListener('click', () => {
-            transcriptEl.innerHTML = '';
-        });
-        
-        // Continuous mode toggle
-        continuousModeToggle.addEventListener('change', (e) => {
-            continuousMode = e.target.checked;
-            voiceBtn.textContent = continuousMode ? 'Tap to Talk' : 'Hold to Talk';
-            
-            if (continuousMode) {
-                setStatus('🎙️ Continuous mode ON — tap to start', true);
-                // Pre-request mic permission
-                navigator.mediaDevices.getUserMedia({ audio: true })
-                    .then(stream => { mediaStream = stream; })
-                    .catch(err => { errorEl.textContent = `Mic access needed: ${err.message}`; });
-            } else {
+    }
+});
+
+// ========== Init ==========
+
+restoreTranscript();
+restoreBackgroundPending();
+renderModeToggle();
+connect();
+
+// Request mic permission immediately — avoids the awkward first-tap dance.
+// On iOS, don't open the mic just for page load: an open capture flips
+// Bluetooth (e.g. car audio) into hands-free "call" mode. Enable the button
+// and let the first tap acquire the mic instead.
+(async () => {
+    try {
+        const perm = await navigator.permissions.query({ name: 'microphone' });
+        if (perm.state === 'granted') {
+            if (isIOS) {
+                voiceBtn.disabled = false;
                 setStatus('Ready');
-                // Release mic
-                if (mediaStream && !isRecording) {
-                    mediaStream.getTracks().forEach(track => track.stop());
-                    mediaStream = null;
-                }
+            } else {
+                await requestMic();
             }
-        });
-        
-        // Connect on load
-        connect();
-        
-        // Keep connection alive
-        setInterval(() => {
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: 'ping' }));
-            }
-        }, 30000);
-    </script>
+        } else if (perm.state === 'prompt') {
+            micBanner.classList.add('visible');
+        }
+        // If 'denied', they'll see the error when they tap the button.
+    } catch {
+        // permissions.query not supported (older iOS) — show banner
+        micBanner.classList.add('visible');
+    }
+})();
+
+// Keep WebSocket alive
+setInterval(() => {
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
+}, 15000);
+</script>
 </body>
 </html>

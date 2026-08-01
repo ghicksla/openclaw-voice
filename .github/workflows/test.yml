@@ -33,12 +33,7 @@ jobs:
       - name: Run unit tests
         run: |
           source .venv/bin/activate
-          pytest tests/test_modules.py -v
-      
-      - name: Run server tests
-        run: |
-          source .venv/bin/activate
-          pytest tests/test_server.py -v
+          pytest tests/ -v
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 

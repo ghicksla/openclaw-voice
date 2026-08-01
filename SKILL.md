@@ -77,8 +77,17 @@ For HTTPS (required for mobile mic), use Tailscale Funnel or your own SSL.
 |----------|----------|-------------|
 | `OPENCLAW_GATEWAY_URL` | Yes* | OpenClaw gateway URL (e.g., `http://localhost:18789`) |
 | `OPENCLAW_GATEWAY_TOKEN` | Yes* | Gateway auth token |
+| `OPENCLAW_GATEWAY_AGENT_ID` | No | Gateway agent id (default: `main`) |
 | `ELEVENLABS_API_KEY` | Recommended | For high-quality TTS |
 | `OPENAI_API_KEY` | Fallback | Used if gateway not configured |
+| `OPENCLAW_WORKSPACE_ROOT` | No | Workspace root for OpenClaw file discovery |
+| `OPENCLAW_AGENTS_CONFIG` | No | Override `config/agents.json` path |
+| `OPENCLAW_USER_PROFILE` | No | Override `USER.md` path |
+| `OPENCLAW_AGENTMAIL_SEND_SCRIPT` | No | Override AgentMail send script path |
+| `OPENCLAW_TASK_RUNS_DB` | No | Override task runs SQLite path |
+| `OPENCLAW_SESSIONS_STATE` | No | Override OpenClaw sessions state file |
+| `OPENCLAW_VOICE_DELIVERY_DIR` | No | Per-session durable delivery state directory |
+| `OPENCLAW_VOICE_OUTBOX_DIR` | No | Durable outbox directory for delayed results |
 
 *Required for full agent integration. Falls back to direct OpenAI if not set.
 
@@ -88,6 +97,14 @@ For HTTPS (required for mobile mic), use Tailscale Funnel or your own SSL.
 - **Continuous mode**: Hands-free, auto-listens after responses
 - **Keyboard shortcut**: Spacebar toggles recording
 - **Mobile support**: Works on phones (requires HTTPS)
+- **Strict final-only streaming in OpenClaw mode**: Filters output to `<final>...</final>` to avoid reasoning leakage
+- **Durable delayed delivery**: Replays background results and pending email-copy actions after reconnect
+
+## OpenClaw-Specific Behavior
+
+- Background tasks can return after the initial voice turn; delivery is persisted and replayed.
+- "Send a copy to my email" uses the configured AgentMail script path and can queue until a copyable final response exists.
+- Session announce polling reads OpenClaw session output to surface late sub-agent completions.
 
 ## API Key Auth (Optional)
 

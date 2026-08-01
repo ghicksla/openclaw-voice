@@ -22,6 +22,15 @@ def is_port_in_use(port: int) -> bool:
         return s.connect_ex(('127.0.0.1', port)) == 0
 
 
+async def recv_until_type(ws, expected_type: str, *, max_messages: int = 8) -> dict:
+    """Read WebSocket messages until the expected type appears."""
+    for _ in range(max_messages):
+        response = json.loads(await asyncio.wait_for(ws.recv(), timeout=5.0))
+        if response.get("type") == expected_type:
+            return response
+    pytest.fail(f"Did not receive {expected_type!r} within {max_messages} messages")
+
+
 @pytest.fixture(scope="module")
 def server():
     """Start the server for testing."""
@@ -98,7 +107,7 @@ class TestServerWebSocket:
         ws_url, _ = server
         async with websockets.connect(ws_url) as ws:
             await ws.send(json.dumps({"type": "ping"}))
-            response = json.loads(await ws.recv())
+            response = await recv_until_type(ws, "pong")
             assert response["type"] == "pong"
     
     @pytest.mark.asyncio
@@ -110,12 +119,12 @@ class TestServerWebSocket:
         async with websockets.connect(ws_url) as ws:
             # Start
             await ws.send(json.dumps({"type": "start_listening"}))
-            response = json.loads(await ws.recv())
+            response = await recv_until_type(ws, "listening_started")
             assert response["type"] == "listening_started"
             
             # Stop
             await ws.send(json.dumps({"type": "stop_listening"}))
-            response = json.loads(await ws.recv())
+            response = await recv_until_type(ws, "listening_stopped")
             assert response["type"] == "listening_stopped"
     
     @pytest.mark.asyncio
@@ -127,7 +136,7 @@ class TestServerWebSocket:
         async with websockets.connect(ws_url) as ws:
             # Start listening
             await ws.send(json.dumps({"type": "start_listening"}))
-            await ws.recv()  # listening_started
+            await recv_until_type(ws, "listening_started")
             
             # Send some audio (silence)
             audio = np.zeros(16000, dtype=np.float32)

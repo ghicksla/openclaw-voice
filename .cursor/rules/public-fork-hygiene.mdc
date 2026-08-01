@@ -1,0 +1,39 @@
+---
+description: Keep the public OpenClaw Voice fork clean, portable, and free of private/local data.
+alwaysApply: true
+---
+
+# Public Fork Hygiene
+
+This repository is a public fork of OpenClaw Voice. Work normally happens on feature branches, not by merging directly into fork `main`.
+
+## Porting From Greg's OpenClaw Workspace
+
+When copying or comparing changes from `/home/openclaw/.openclaw/workspace/tools/openclaw-voice/`, classify each change before applying it:
+
+- **Portable:** generic reliability, security, UX, tests, docs, packaging, public examples, environment path overrides.
+- **Local-only:** Greg-specific names, emails, addresses, calendars, reminders, personal examples, internal IPs, local filesystem paths, private prompts, model/session quirks, or homelab assumptions.
+- **Secret/private:** tokens, API keys, auth headers, credentials, `.env` values, session state, private transcripts, personal data. Never copy these.
+
+Do not wholesale merge the private workspace into this repo. Cherry-pick or manually port only changes that are safe for a public, reusable project.
+
+## Public Examples And Docs
+
+- Use generic examples such as `user@example.com`, `Lakeside`, `Harbor Road`, and `localhost`.
+- Do not include real personal data, real home/work locations, private infrastructure addresses, or private operational notes.
+- `.env.example` must document variable names and safe placeholders only.
+
+## Open Source Security Baseline
+
+- Keep dependency and test changes reviewable; avoid committing generated caches, virtualenvs, build artifacts, logs, or binary artifacts unless they are intentional project assets.
+- Prefer least-privilege defaults in examples, CI, and GitHub Actions token permissions.
+- Keep branch protection, secret scanning/push protection, dependency alerts, and automated dependency updates in mind when changing repository setup.
+- If a secret or private detail is ever committed, stop and rotate/revoke it before trying history cleanup.
+
+## Before Commit Or PR
+
+Run a quick public-safety pass:
+
+- `git diff --cached` contains no secrets, personal data, local paths, private IPs, or Greg/OpenClaw-only examples.
+- New behavior works outside Greg's filesystem layout via documented environment variables.
+- Tests and docs use public-safe names and fixtures.
