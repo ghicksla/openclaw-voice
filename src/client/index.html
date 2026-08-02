@@ -299,6 +299,10 @@ let currentResponseElement = null;
 let streamingText = '';
 let modelName = ''; // <- ADDED
 let backgroundTaskPending = false;
+let assistantResponding = false;
+let reconnectTimer = null;
+let reconnectAttempts = 0;
+let releasingMic = false;
 let waveState = 'idle'; // idle | listening | speaking | thinking
 const isSafariLike = /Safari/i.test(navigator.userAgent)
     && !/Chrome|Chromium|CriOS|FxiOS|Edg/i.test(navigator.userAgent);
@@ -661,6 +665,17 @@ function getSessionId() {
     return id;
 }
 
+function getClientId() {
+    let id = localStorage.getItem('openclaw_voice_client_id') || '';
+    if (!id) {
+        id = (window.crypto && window.crypto.randomUUID)
+            ? window.crypto.randomUUID()
+            : `client-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        localStorage.setItem('openclaw_voice_client_id', id);
+    }
+    return id;
+}
+
 function transcriptKey() { return `openclaw_voice_transcript_${getSessionId()}`; }
 function backgroundPendingKey() { return `openclaw_voice_background_pending_${getSessionId()}`; }
 function persistTranscript() { try { localStorage.setItem(transcriptKey(), transcriptEl.innerHTML); } catch {} }
@@ -764,6 +779,7 @@ function flushAACQueue() {
 }
 
 function onAudioComplete() {
+    assistantResponding = false;
     if (backgroundTaskPending) {
         renderBackgroundPendingStatus();
         return;
@@ -773,8 +789,8 @@ function onAudioComplete() {
             setStatus('Paused — tap mic to resume', '');
             return;
         }
-        userPausedContinuous = true;
-        setStatus('Ready — tap mic for next turn', 'active');
+        setStatus('Listening again...', 'active');
+        setTimeout(() => startRecording(true), 350);
     } else {
         setStatus('Ready');
     }
@@ -885,21 +901,39 @@ function beginAssistantTurn() {
 // ========== WebSocket ==========
 
 function connect() {
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const basePath = location.pathname.replace(/\/$/, '');
     const wsPath = basePath ? `${basePath}/ws` : '/ws';
     const params = new URLSearchParams();
     const sessionId = getSessionId();
     params.set('session_id', sessionId);
+    params.set('client_id', getClientId());
     const apiKey = new URLSearchParams(location.search).get('api_key') || localStorage.getItem('openclaw_api_key') || '';
     if (apiKey) params.set('api_key', apiKey);
     ws = new WebSocket(`${protocol}//${location.host}${wsPath}?${params}`);
 
     ws.onopen = () => {
+        reconnectAttempts = 0;
         if (backgroundTaskPending) renderBackgroundPendingStatus();
         else if (mediaStream) setStatus('Ready');
         else setStatus('Ready — tap mic to start');
         errorEl.textContent = '';
+        if (isRecording) {
+            ws.send(JSON.stringify({
+                type: 'start_listening',
+                sample_rate: audioContext ? audioContext.sampleRate : 16000,
+                mode: continuousMode ? 'continuous' : 'push_to_talk',
+                client_id: getClientId(),
+            }));
+        } else if (
+            continuousMode
+            && !userPausedContinuous
+            && !backgroundTaskPending
+            && !hasActiveResponse()
+        ) {
+            setTimeout(() => startRecording(true), 250);
+        }
     };
     ws.onclose = (e) => {
         if ([4001,4002,4003].includes(e.code)) {
@@ -910,7 +944,10 @@ function connect() {
             } else {
                 setStatus('Disconnected — reconnecting...');
             }
-            setTimeout(connect, 2000);
+            const delay = Math.min(30000, 1000 * (2 ** reconnectAttempts));
+            reconnectAttempts++;
+            clearTimeout(reconnectTimer);
+            reconnectTimer = setTimeout(connect, delay);
         }
     };
     ws.onerror = () => { errorEl.textContent = 'WebSocket error. Is the server running?'; };
@@ -923,6 +960,9 @@ function handleMessage(msg) {
             modelName = formatModelLabel(msg.display_model || msg.model || '');
             if (backgroundTaskPending) renderBackgroundPendingStatus();
             else setStatus('Ready'); // Re-set status to update with model name
+            break;
+        case 'session_started':
+            if (msg.resumed) console.info('Resumed continuous voice session');
             break;
         case 'background_task_started':
             setBackgroundTaskPending(true);
@@ -940,6 +980,29 @@ function handleMessage(msg) {
                 setStatus('Thinking...', 'thinking');
             }
             break;
+        case 'turn_started':
+            setStatus('Listening...', 'active');
+            break;
+        case 'eot_pending':
+            setStatus('Checking if you are finished...', 'thinking');
+            break;
+        case 'turn_committed':
+            awaitingServerTurn = false;
+            stopRecording(false, false, false);
+            setStatus('Thinking...', 'thinking');
+            break;
+        case 'state':
+            if (msg.state === 'listening') setStatus('Listening...', 'active');
+            else if (msg.state === 'thinking') {
+                assistantResponding = true;
+                setStatus('Thinking...', 'thinking');
+            } else if (msg.state === 'speaking') {
+                assistantResponding = true;
+                setStatus('Speaking...', 'active');
+            } else if (msg.state === 'idle' && !aacPlaying && aacQueue.length === 0) {
+                assistantResponding = false;
+            }
+            break;
         case 'assistant_turn_start':
             beginAssistantTurn();
             break;
@@ -948,12 +1011,27 @@ function handleMessage(msg) {
             if (!useBrowserSTT || !previewElement) addTranscript('You', msg.text, 'user');
             setStatus('Thinking...', 'thinking');
             beginAssistantTurn();
+            assistantResponding = true;
             break;
         case 'no_speech':
             awaitingServerTurn = false;
             clearPreview();
-            userPausedContinuous = true;
-            setStatus('I didn’t catch that — tap mic and try again', '');
+            if (continuousMode) {
+                userPausedContinuous = false;
+                setStatus('No speech detected — listening again...', 'active');
+                setTimeout(() => {
+                    if (
+                        continuousMode
+                        && !userPausedContinuous
+                        && !backgroundTaskPending
+                        && !hasActiveResponse()
+                    ) {
+                        startRecording(true);
+                    }
+                }, 350);
+            } else {
+                setStatus('I didn’t catch that — tap mic and try again', '');
+            }
             break;
         case 'response_chunk':
             streamingText += msg.text;
@@ -968,6 +1046,10 @@ function handleMessage(msg) {
             }
             persistTranscript();
             if (!aacPlaying && aacQueue.length === 0) onAudioComplete();
+            break;
+        case 'tts_cancelled':
+            flushAACQueue();
+            assistantResponding = false;
             break;
         case 'response_text':
             addTranscript('AI', msg.text, 'assistant');
@@ -986,6 +1068,17 @@ async function requestMic() {
                 ? { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
                 : { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true }
         });
+        const track = mediaStream.getAudioTracks()[0];
+        if (track) {
+            track.onended = () => {
+                if (!releasingMic && isRecording) {
+                    console.warn('Microphone track ended unexpectedly; rebuilding capture');
+                    stopRecording(false, false, false).then(() => {
+                        if (continuousMode && !userPausedContinuous) startRecording(true);
+                    });
+                }
+            };
+        }
         micBanner.classList.remove('visible');
         voiceBtn.disabled = false;
         setStatus('Ready');
@@ -1002,8 +1095,10 @@ async function requestMic() {
 // TTS plays over the normal high-quality media (A2DP) route.
 function releaseMic() {
     if (!mediaStream) return;
+    releasingMic = true;
     mediaStream.getTracks().forEach(t => t.stop());
     mediaStream = null;
+    setTimeout(() => { releasingMic = false; }, 0);
 }
 
 // ========== Browser STT ==========
@@ -1106,6 +1201,15 @@ async function startRecording(fromContinuousRestart) {
     if (!audioContext || audioContext.state === 'closed') {
         const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
         audioContext = isSafariLike ? new AudioContextCtor() : new AudioContextCtor({ sampleRate: 16000 });
+        audioContext.onstatechange = () => {
+            if (
+                isRecording
+                && audioContext
+                && (audioContext.state === 'suspended' || audioContext.state === 'interrupted')
+            ) {
+                audioContext.resume().catch(() => {});
+            }
+        };
     }
     if (audioContext.state === 'suspended') await audioContext.resume();
     audioSource = audioContext.createMediaStreamSource(mediaStream);
@@ -1130,20 +1234,8 @@ async function startRecording(fromContinuousRestart) {
             ws.send(JSON.stringify({ type: 'audio', data: float32ToBase64(data) }));
         }
 
-        if (continuousMode) {
-            const energy = micEnergy;
-            const now = Date.now();
-            if (energy > 0.015) {
-                lastSoundTime = now;
-                heardSpeech = true;
-            } else if (heardSpeech && now - lastSoundTime > 2000) {
-                stopRecording();
-            } else if (!heardSpeech && now - recordingStartedAt > 6000) {
-                stopRecording();
-            } else if (now - recordingStartedAt > 15000) {
-                stopRecording();
-            }
-        }
+        // Continuous-mode endpointing is server-owned. The client streams
+        // uninterrupted audio until it receives turn_committed.
     };
 
     audioSource.connect(audioProcessor);
@@ -1162,7 +1254,7 @@ async function startRecording(fromContinuousRestart) {
     setStatus(continuousMode ? '🎙️ Listening (continuous)...' : '🎙️ Listening...', 'active');
     playTone();
 
-    if (useBrowserSTT) {
+    if (useBrowserSTT && !continuousMode) {
         setupRecognition();
         if (recognition) try { recognition.start(); } catch {}
     }
@@ -1170,11 +1262,13 @@ async function startRecording(fromContinuousRestart) {
         ws.send(JSON.stringify({
             type: 'start_listening',
             sample_rate: audioContext ? audioContext.sampleRate : 16000,
+            mode: continuousMode ? 'continuous' : 'push_to_talk',
+            client_id: getClientId(),
         }));
     }
 }
 
-async function stopRecording(playSignal = true, userInitiated = false) {
+async function stopRecording(playSignal = true, userInitiated = false, submit = true) {
     if (!isRecording) return;
     isRecording = false;
     if (userInitiated && continuousMode) {
@@ -1190,9 +1284,14 @@ async function stopRecording(playSignal = true, userInitiated = false) {
 
     // Finish browser STT before tearing down the mic — closing the stream first
     // causes Chrome to return an empty transcript on later turns.
-    const browserTranscript = useBrowserSTT
+    const browserTranscript = useBrowserSTT && submit
         ? await stopRecognitionAndWaitForTranscript()
         : '';
+    if (!submit && recognition) {
+        try { recognition.abort(); } catch {}
+        recognition = null;
+        finishingRecognition = false;
+    }
 
     if (audioProcessor) { audioProcessor.disconnect(); audioProcessor = null; }
     if (silentGain) { silentGain.disconnect(); silentGain = null; }
@@ -1208,7 +1307,7 @@ async function stopRecording(playSignal = true, userInitiated = false) {
     if (isIOS) releaseMic();
 
     let hasSomethingToSend = false;
-    if (ws && ws.readyState === WebSocket.OPEN) {
+    if (submit && ws && ws.readyState === WebSocket.OPEN) {
         if (useBrowserSTT) {
             const finalText = (browserTranscript || currentBrowserTranscript()).trim();
             clearPreview();
@@ -1236,6 +1335,27 @@ async function stopRecording(playSignal = true, userInitiated = false) {
     if (playSignal) playTone();
 }
 
+function hasActiveResponse() {
+    return assistantResponding || aacPlaying || aacQueue.length > 0;
+}
+
+async function interruptResponse() {
+    if (!hasActiveResponse()) return false;
+    warmUpPlayer();
+    flushAACQueue();
+    assistantResponding = false;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'interrupt' }));
+    }
+    if (continuousMode) {
+        userPausedContinuous = false;
+        await startRecording(true);
+    } else {
+        setStatus('Ready');
+    }
+    return true;
+}
+
 // ========== Event listeners ==========
 
 // Mic permission button. On iOS, release the capture right after the
@@ -1250,6 +1370,10 @@ let handledByTouch = false;
 voiceBtn.addEventListener('mousedown', (e) => {
     if (handledByTouch) return;
     if (e.button !== 0) return;
+    if (hasActiveResponse()) {
+        interruptResponse();
+        return;
+    }
     if (continuousMode) {
         if (isRecording) stopRecording(true, true);
         else startRecording();
@@ -1271,6 +1395,10 @@ voiceBtn.addEventListener('touchstart', (e) => {
     e.preventDefault();
     handledByTouch = true;
     warmUpPlayer();
+    if (hasActiveResponse()) {
+        interruptResponse();
+        return;
+    }
     if (continuousMode) {
         if (isRecording) stopRecording(true, true);
         else startRecording();
@@ -1288,7 +1416,8 @@ voiceBtn.addEventListener('touchend', (e) => {
 document.addEventListener('keydown', (e) => {
     if (e.code === 'Space' && !e.repeat && document.activeElement?.tagName !== 'INPUT') {
         e.preventDefault();
-        if (isRecording) stopRecording(true, true);
+        if (hasActiveResponse()) interruptResponse();
+        else if (isRecording) stopRecording(true, true);
         else startRecording();
     }
 });
@@ -1374,6 +1503,19 @@ connect();
 setInterval(() => {
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
 }, 15000);
+
+window.addEventListener('pageshow', () => {
+    if (!ws || ws.readyState === WebSocket.CLOSED) connect();
+    if (playbackCtx && playbackCtx.state === 'suspended') playbackCtx.resume().catch(() => {});
+});
+
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    if (!ws || ws.readyState === WebSocket.CLOSED) connect();
+    if (isRecording && audioContext && audioContext.state === 'suspended') {
+        audioContext.resume().catch(() => {});
+    }
+});
 </script>
 </body>
 </html>

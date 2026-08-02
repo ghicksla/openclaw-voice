@@ -41,13 +41,18 @@ tts = [
     "openai>=1.6.0",
 ]
 all = [
-    "openclaw-voice[stt,tts]",
+    "openclaw-voice[semantic,stt,tts]",
 ]
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.23.0",
     "black>=23.12.0",
     "ruff>=0.1.0",
+]
+semantic = [
+    "onnxruntime>=1.23.2",
+    "silero-vad>=6.2.1",
+    "transformers>=5.14.1",
 ]
 
 [project.urls]

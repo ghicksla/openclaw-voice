@@ -33,11 +33,21 @@ from .tts import ChatterboxTTS
 from .backend import AIBackend
 from .vad import VoiceActivityDetector
 from .auth import token_manager, load_keys_from_env, APIKey
+from .session_registry import ResumeRecord, SessionResumeRegistry
+from .turn import (
+    EOT_PENDING,
+    TURN_COMMITTED,
+    USER_SPEECH_STARTED,
+    SmartTurnGate,
+    TurnConfig,
+    TurnEngine,
+)
 from .text_utils import (
     StreamSanitizer,
     clean_for_display,
     clean_for_speech,
     extract_last_final,
+    is_silent_control_response,
     looks_like_reasoning_leak,
 )
 
@@ -47,6 +57,7 @@ from .text_utils import (
 # without this, a .env-based deploy would silently miss them.
 try:
     from dotenv import load_dotenv
+
     load_dotenv()
 except ImportError:
     pass
@@ -69,15 +80,16 @@ def prepare_audio_for_stt(audio: np.ndarray, sample_rate: int) -> np.ndarray:
 
 
 WORKSPACE_ROOT = Path(os.getenv("OPENCLAW_WORKSPACE_ROOT") or Path(__file__).resolve().parents[4])
-AGENTS_CONFIG_PATH = Path(os.getenv("OPENCLAW_AGENTS_CONFIG") or str(WORKSPACE_ROOT / "config" / "agents.json"))
+AGENTS_CONFIG_PATH = Path(
+    os.getenv("OPENCLAW_AGENTS_CONFIG") or str(WORKSPACE_ROOT / "config" / "agents.json")
+)
 USER_PROFILE_PATH = Path(os.getenv("OPENCLAW_USER_PROFILE") or str(WORKSPACE_ROOT / "USER.md"))
 AGENTMAIL_SEND_SCRIPT = Path(
     os.getenv("OPENCLAW_AGENTMAIL_SEND_SCRIPT")
     or str(WORKSPACE_ROOT / "skills" / "agentmail" / "scripts" / "send_email.py")
 )
 TASK_RUNS_DB_PATH = Path(
-    os.getenv("OPENCLAW_TASK_RUNS_DB")
-    or str(Path.home() / ".openclaw" / "tasks" / "runs.sqlite")
+    os.getenv("OPENCLAW_TASK_RUNS_DB") or str(Path.home() / ".openclaw" / "tasks" / "runs.sqlite")
 )
 SESSIONS_STATE_PATH = Path(
     os.getenv("OPENCLAW_SESSIONS_STATE")
@@ -88,8 +100,7 @@ VOICE_DELIVERY_STATE_DIR = Path(
     or str(Path.home() / ".openclaw" / "voice" / "delivery-state")
 )
 VOICE_RESULT_OUTBOX_DIR = Path(
-    os.getenv("OPENCLAW_VOICE_OUTBOX_DIR")
-    or str(Path.home() / ".openclaw" / "voice" / "outbox")
+    os.getenv("OPENCLAW_VOICE_OUTBOX_DIR") or str(Path.home() / ".openclaw" / "voice" / "outbox")
 )
 TASK_RESULT_START = "<<<BEGIN_UNTRUSTED_CHILD_RESULT>>>"
 TASK_RESULT_END = "<<<END_UNTRUSTED_CHILD_RESULT>>>"
@@ -118,8 +129,7 @@ async def get_tasks() -> list[dict]:
         conn = sqlite3.connect(TASK_RUNS_DB_PATH)
         conn.row_factory = sqlite3.Row
         try:
-            rows = conn.execute(
-                """
+            rows = conn.execute("""
                 SELECT
                   task_id,
                   runtime,
@@ -145,8 +155,7 @@ async def get_tasks() -> list[dict]:
                 FROM task_runs
                 ORDER BY created_at DESC
                 LIMIT 256
-                """
-            ).fetchall()
+                """).fetchall()
             return [
                 {
                     "taskId": row["task_id"],
@@ -229,15 +238,11 @@ def _normalize_pending_email_copy(raw: object) -> Optional[dict]:
         return None
     min_session_offset_raw = raw.get("minSessionOffset")
     min_session_offset = (
-        int(min_session_offset_raw)
-        if isinstance(min_session_offset_raw, int)
-        else None
+        int(min_session_offset_raw) if isinstance(min_session_offset_raw, int) else None
     )
     requested_at_raw = raw.get("requestedAt")
     requested_at = (
-        float(requested_at_raw)
-        if isinstance(requested_at_raw, (int, float))
-        else time.time()
+        float(requested_at_raw) if isinstance(requested_at_raw, (int, float)) else time.time()
     )
     require_delayed = bool(raw.get("requireDelayed", True))
     return {
@@ -276,7 +281,9 @@ async def read_voice_delivery_state(session_owner_key: str) -> dict:
             "messageIds": [str(v) for v in (data.get("messageIds") or []) if str(v).strip()],
             "sessionOffset": data.get("sessionOffset"),
             "pendingEmailCopy": _normalize_pending_email_copy(data.get("pendingEmailCopy")),
-            "lastSpokenAnswer": str(data["lastSpokenAnswer"]) if data.get("lastSpokenAnswer") else None,
+            "lastSpokenAnswer": (
+                str(data["lastSpokenAnswer"]) if data.get("lastSpokenAnswer") else None
+            ),
         }
 
     try:
@@ -339,12 +346,14 @@ async def load_voice_result_outbox(session_owner_key: str) -> list[dict]:
             item_id = str(item.get("id") or "").strip()
             text = str(item.get("text") or "").strip()
             if item_id and text:
-                items.append({
-                    "id": item_id,
-                    "text": text,
-                    "maxChars": item.get("maxChars"),
-                    "maxSentences": item.get("maxSentences"),
-                })
+                items.append(
+                    {
+                        "id": item_id,
+                        "text": text,
+                        "maxChars": item.get("maxChars"),
+                        "maxSentences": item.get("maxSentences"),
+                    }
+                )
         return items
 
     try:
@@ -362,7 +371,7 @@ async def enqueue_voice_result_outbox(
     max_sentences: int = VOICE_RESULT_NORMAL_MAX_SENTENCES,
 ) -> str:
     """Queue a durable background result for replay after reconnect."""
-    cleaned = clean_for_display(text).strip() or text.strip()
+    cleaned = clean_for_display(text).strip()
     if not cleaned:
         return ""
 
@@ -379,12 +388,14 @@ async def enqueue_voice_result_outbox(
                     items = [item for item in data if isinstance(item, dict)]
             except Exception:
                 items = []
-        items.append({
-            "id": outbox_id,
-            "text": cleaned,
-            "maxChars": max_chars,
-            "maxSentences": max_sentences,
-        })
+        items.append(
+            {
+                "id": outbox_id,
+                "text": cleaned,
+                "maxChars": max_chars,
+                "maxSentences": max_sentences,
+            }
+        )
         path.write_text(json.dumps(items, indent=2))
 
     try:
@@ -477,21 +488,25 @@ async def read_new_session_events(
                     or TASK_RESULT_START in text
                     or "sourceTool=subagent_announce" in text
                 ):
-                    events.append({
-                        "id": item.get("id"),
-                        "kind": "announce",
-                        "text": text,
-                    })
+                    events.append(
+                        {
+                            "id": item.get("id"),
+                            "kind": "announce",
+                            "text": text,
+                        }
+                    )
                 continue
 
             if role == "assistant":
                 final_text = extract_last_final(text)
                 if final_text:
-                    events.append({
-                        "id": item.get("id"),
-                        "kind": "assistant_final",
-                        "text": final_text,
-                    })
+                    events.append(
+                        {
+                            "id": item.get("id"),
+                            "kind": "assistant_final",
+                            "text": final_text,
+                        }
+                    )
 
         return next_offset, events
 
@@ -542,7 +557,11 @@ async def read_assistant_finals_after(
     ``<final>`` block, so the caller usually wants the last entry.
     """
     events = await read_assistant_final_events_after(session_file_path, offset)
-    return [str(event.get("text") or "").strip() for event in events if str(event.get("text") or "").strip()]
+    return [
+        str(event.get("text") or "").strip()
+        for event in events
+        if str(event.get("text") or "").strip()
+    ]
 
 
 async def read_recent_assistant_final_texts(
@@ -641,7 +660,9 @@ def extract_task_result_text(task_payload: str) -> str:
     """Extract the finished child result from an announce payload."""
     result_text = task_payload
     if TASK_RESULT_START in task_payload and TASK_RESULT_END in task_payload:
-        result_text = task_payload.split(TASK_RESULT_START, 1)[1].split(TASK_RESULT_END, 1)[0].strip()
+        result_text = (
+            task_payload.split(TASK_RESULT_START, 1)[1].split(TASK_RESULT_END, 1)[0].strip()
+        )
 
     if result_text.startswith("{") or result_text.startswith("["):
         try:
@@ -754,8 +775,12 @@ def _runtime_env_value(name: str) -> str:
 def is_work_commute_request(text: str) -> bool:
     """Return true for voice requests about the user's normal drive to work."""
     lower = text.lower()
-    workish = any(term in lower for term in ("to work", "commute", "route to work", "traffic to work"))
-    routeish = any(term in lower for term in ("route", "traffic", "accident", "avoid", "leave", "drive"))
+    workish = any(
+        term in lower for term in ("to work", "commute", "route to work", "traffic to work")
+    )
+    routeish = any(
+        term in lower for term in ("route", "traffic", "accident", "avoid", "leave", "drive")
+    )
     return workish and routeish
 
 
@@ -804,14 +829,32 @@ def detect_voice_intents(text: str) -> set[str]:
         # Requires an anaphoric/copy object word so future-tense asks like
         # "email me the news in the morning" stay on the orchestrator path.
         email_action_terms = {
-            "send", "email", "mail", "forward", "share", "deliver",
+            "send",
+            "email",
+            "mail",
+            "forward",
+            "share",
+            "deliver",
         }
         email_target_terms = {
-            "email", "gmail", "inbox", "mailbox",
+            "email",
+            "gmail",
+            "inbox",
+            "mailbox",
         }
         email_object_terms = {
-            "it", "this", "that", "those", "these", "them",
-            "copy", "summary", "answer", "response", "recap", "result",
+            "it",
+            "this",
+            "that",
+            "those",
+            "these",
+            "them",
+            "copy",
+            "summary",
+            "answer",
+            "response",
+            "recap",
+            "result",
         }
         if (
             tokens.intersection(email_action_terms)
@@ -838,9 +881,18 @@ def detect_voice_intents(text: str) -> set[str]:
             "let me know",
         )
         research_tokens = {
-            "research", "analyze", "analysis", "investigate", "look", "check", "deep", "dive",
+            "research",
+            "analyze",
+            "analysis",
+            "investigate",
+            "look",
+            "check",
+            "deep",
+            "dive",
         }
-        if tokens.intersection(research_tokens) and any(marker in lower for marker in async_markers):
+        if tokens.intersection(research_tokens) and any(
+            marker in lower for marker in async_markers
+        ):
             intents.add("background_research")
 
     return intents
@@ -880,7 +932,9 @@ def extract_compound_email_task_text(text: str) -> Optional[str]:
     if not match or match.start() < 8:
         return None
 
-    task_text = re.sub(r"\s+(?:and|then|also)\s*$", "", text[: match.start()].strip(), flags=re.IGNORECASE)
+    task_text = re.sub(
+        r"\s+(?:and|then|also)\s*$", "", text[: match.start()].strip(), flags=re.IGNORECASE
+    )
     if len(task_text.split()) < 3:
         return None
     return task_text
@@ -1139,8 +1193,27 @@ def is_incomplete_voice_answer(text: str) -> bool:
         return False
     tail = cleaned.rsplit(maxsplit=1)[-1].lower().strip(",;:")
     if tail in {
-        "a", "an", "the", "and", "or", "but", "with", "for", "to", "of", "in",
-        "is", "are", "was", "were", "be", "as", "at", "by", "from", "about",
+        "a",
+        "an",
+        "the",
+        "and",
+        "or",
+        "but",
+        "with",
+        "for",
+        "to",
+        "of",
+        "in",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "as",
+        "at",
+        "by",
+        "from",
+        "about",
     }:
         return True
     if tail.isdigit():
@@ -1275,38 +1348,39 @@ async def resolve_work_commute_response(transcript: str) -> Optional[str]:
 
 class Settings(BaseSettings):
     """Server configuration."""
-    
+
     # Server
     host: str = "0.0.0.0"
     port: int = 8765
-    
+
     # Auth
     require_auth: bool = False  # Set True for production
     master_key: Optional[str] = None  # Admin key for full access
-    
+
     # STT
     stt_model: str = "base"  # tiny, base, small, medium, large-v3-turbo
     stt_device: str = "auto"  # auto, cpu, cuda, mps
-    
+
     # TTS
     tts_model: str = "chatterbox"
     tts_voice: Optional[str] = None  # Path to voice sample for cloning
     elevenlabs_voice_id: Optional[str] = None  # ElevenLabs voice ID
-    
+
     # AI Backend
     backend_type: str = "openai"  # openai, openclaw, custom
     backend_url: str = "https://api.openai.com/v1"
     backend_model: str = "gpt-4o-mini"
     openai_api_key: Optional[str] = None
     voice_max_tokens: int = 500  # Cap on AI reply length (OPENCLAW_VOICE_MAX_TOKENS)
-    
+
     # OpenClaw Gateway (auto-detected from OPENCLAW_GATEWAY_URL + TOKEN)
     openclaw_gateway_url: Optional[str] = None
     openclaw_gateway_token: Optional[str] = None
-    
+
     # Audio
     sample_rate: int = 16000
-    
+    session_grace_seconds: int = 600
+
     class Config:
         env_prefix = "OPENCLAW_"
         env_file = ".env"
@@ -1314,35 +1388,39 @@ class Settings(BaseSettings):
 
 settings = Settings()
 app = FastAPI(title="OpenClaw Voice", version="0.1.0")
+session_resume_registry = SessionResumeRegistry(
+    grace_seconds=settings.session_grace_seconds,
+)
 
 # Global instances (initialized on startup)
 stt: Optional[WhisperSTT] = None
 tts: Optional[ChatterboxTTS] = None
 backend: Optional[AIBackend] = None
 vad: Optional[VoiceActivityDetector] = None
+semantic_gate: Optional[SmartTurnGate] = None
 
 
 @app.on_event("startup")
 async def startup():
     """Initialize models on server start."""
-    global stt, tts, backend, vad
-    
+    global stt, tts, backend, vad, semantic_gate
+
     logger.info("Initializing OpenClaw Voice server...")
-    
+
     # Load API keys
     load_keys_from_env()
     if settings.require_auth:
         logger.info("🔐 Authentication ENABLED")
     else:
         logger.warning("⚠️ Authentication DISABLED (dev mode)")
-    
+
     # Initialize STT
     logger.info(f"Loading STT model: {settings.stt_model}")
     stt = WhisperSTT(
         model_name=settings.stt_model,
         device=settings.stt_device,
     )
-    
+
     # Initialize TTS
     logger.info(f"Loading TTS model: {settings.tts_model}")
     voice_id = settings.elevenlabs_voice_id or os.getenv("ELEVENLABS_VOICE_ID")
@@ -1350,12 +1428,12 @@ async def startup():
         voice_sample=settings.tts_voice,
         voice_id=voice_id,
     )
-    
+
     # Initialize AI backend
     # Auto-detect OpenClaw gateway
     gateway_url = settings.openclaw_gateway_url or os.getenv("OPENCLAW_GATEWAY_URL")
     gateway_token = settings.openclaw_gateway_token or os.getenv("OPENCLAW_GATEWAY_TOKEN")
-    
+
     if gateway_url and gateway_token:
         # Use OpenClaw gateway (connects to Aria!)
         logger.info(f"🦞 Connecting to OpenClaw gateway: {gateway_url}")
@@ -1387,11 +1465,14 @@ async def startup():
             api_key=settings.openai_api_key or os.getenv("OPENAI_API_KEY"),
             max_tokens=settings.voice_max_tokens,
         )
-    
+
     # Initialize VAD
     logger.info("Loading VAD model")
     vad = VoiceActivityDetector()
-    
+
+    if TurnConfig.from_env().semantic_enabled:
+        semantic_gate = SmartTurnGate()
+
     logger.info("✅ OpenClaw Voice server ready!")
 
 
@@ -1419,28 +1500,28 @@ async def create_api_key(
     if settings.require_auth:
         if not master_key and not settings.master_key:
             return {"error": "Master key required"}
-        
+
         provided_key = master_key or ""
         if provided_key != settings.master_key:
             # Also check if it's a valid master-tier key
             key = token_manager.validate_key(provided_key)
             if not key or key.tier != "enterprise":
                 return {"error": "Invalid master key"}
-    
+
     from .auth import PRICING_TIERS
-    
+
     if tier not in PRICING_TIERS:
         return {"error": f"Invalid tier. Options: {list(PRICING_TIERS.keys())}"}
-    
+
     tier_config = PRICING_TIERS[tier]
-    
+
     plaintext_key, api_key = token_manager.generate_key(
         name=name,
         tier=tier,
         rate_limit=tier_config["rate_limit"],
         monthly_minutes=tier_config["monthly_minutes"],
     )
-    
+
     return {
         "api_key": plaintext_key,  # Only shown once!
         "key_id": api_key.key_id,
@@ -1455,13 +1536,13 @@ async def create_api_key(
 async def get_usage(api_key: str):
     """
     Get usage stats for an API key.
-    
+
     curl "http://localhost:8765/api/usage?api_key=ocv_xxx"
     """
     key = token_manager.validate_key(api_key)
     if not key:
         return {"error": "Invalid API key"}
-    
+
     return token_manager.get_usage(key)
 
 
@@ -1469,6 +1550,7 @@ def _resolve_display_model() -> str:
     """Read the active model from openclaw.json for display in the voice UI."""
     try:
         import json as _json
+
         config_path = Path.home() / ".openclaw" / "openclaw.json"
         if config_path.exists():
             cfg = _json.loads(config_path.read_text())
@@ -1483,36 +1565,37 @@ def _resolve_display_model() -> str:
 async def websocket_endpoint(websocket: WebSocket):
     """Handle voice WebSocket connections."""
     # Check for API key in query params or headers
-    api_key_str = websocket.query_params.get("api_key") or \
-                  websocket.headers.get("x-api-key")
-    
+    api_key_str = websocket.query_params.get("api_key") or websocket.headers.get("x-api-key")
+
     api_key: Optional[APIKey] = None
-    
+
     if settings.require_auth:
         if not api_key_str:
             await websocket.close(code=4001, reason="API key required")
             return
-        
+
         api_key = token_manager.validate_key(api_key_str)
         if not api_key:
             await websocket.close(code=4002, reason="Invalid API key")
             return
-        
+
         if not token_manager.check_rate_limit(api_key):
             await websocket.close(code=4003, reason="Rate limit exceeded")
             return
-        
+
         logger.info(f"Client connected: {api_key.name} (tier={api_key.tier})")
     else:
         # Dev mode - allow all
         if api_key_str:
             api_key = token_manager.validate_key(api_key_str)
         logger.info("Client connected (auth disabled)")
-    
+
     await websocket.accept()
-    
+
     # Stable browser session key for context continuity (and OpenClaw session routing).
     session_id = websocket.query_params.get("session_id") or "default"
+    client_id = websocket.query_params.get("client_id") or ""
+    resumed_record = session_resume_registry.resume(client_id, session_id) if client_id else None
     agent_id = "main"
     if backend and getattr(backend, "model", "").startswith("openclaw:"):
         agent_id = backend.model.split(":", 1)[1] or "main"
@@ -1521,17 +1604,20 @@ async def websocket_endpoint(websocket: WebSocket):
     # Send session info on connect
     model_name = (backend.model or "unknown").replace("openclaw:", "agent:")
     display_model = _resolve_display_model() if model_name.startswith("agent:") else model_name
-    await websocket.send_json({
-        "type": "session_info",
-        "model": model_name,
-        "display_model": display_model,
-        "sessionId": session_id,
-    })
+    await websocket.send_json(
+        {
+            "type": "session_info",
+            "model": model_name,
+            "display_model": display_model,
+            "sessionId": session_id,
+            "clientId": client_id,
+            "resumed": resumed_record is not None,
+        }
+    )
 
     audio_buffer = []
     is_listening = False
     listen_sample_rate = STT_TARGET_SAMPLE_RATE
-    session_start = None
     delivered_announce_task_ids: set[str] = set()
     delivered_session_message_ids: set[str] = set()
     background_research_tasks: set[asyncio.Task] = set()
@@ -1542,6 +1628,11 @@ async def websocket_endpoint(websocket: WebSocket):
     # Monotonic timestamp of when the UI entered the "Working on it" pending
     # state, or None when not pending. Used by the watcher's safety net.
     background_pending_since: Optional[float] = None
+    connection_mode = resumed_record.mode if resumed_record else "push_to_talk"
+    turn_overrides = dict(resumed_record.turn_config) if resumed_record else {}
+    turn_engine: Optional[TurnEngine] = None
+    turn_counter = 0
+    active_tts_task: asyncio.Task | None = None
 
     def is_session_announce_task(task: dict) -> bool:
         return is_session_completion_task(task, session_owner_key)
@@ -1597,7 +1688,9 @@ async def websocket_endpoint(websocket: WebSocket):
         background_research_tasks.add(task)
         task.add_done_callback(lambda finished: background_research_tasks.discard(finished))
 
-    async def deliver_background_failure(message: str, *, source_offset: Optional[int] = None) -> None:
+    async def deliver_background_failure(
+        message: str, *, source_offset: Optional[int] = None
+    ) -> None:
         """Tell the client a background turn failed and clear pending delivery state."""
         nonlocal pending_email_copy_request, last_spoken_answer
         display_text = clean_for_display(message).strip()
@@ -1610,10 +1703,12 @@ async def websocket_endpoint(websocket: WebSocket):
 
         await websocket.send_json({"type": "background_task_finished"})
         await websocket.send_json({"type": "assistant_turn_start"})
-        await websocket.send_json({
-            "type": "response_chunk",
-            "text": display_text,
-        })
+        await websocket.send_json(
+            {
+                "type": "response_chunk",
+                "text": display_text,
+            }
+        )
 
         seq = 0
         for chunk in split_text_for_tts(display_text):
@@ -1621,19 +1716,23 @@ async def websocket_endpoint(websocket: WebSocket):
             if not aac_bytes:
                 continue
             audio_b64 = base64.b64encode(aac_bytes).decode()
-            await websocket.send_json({
-                "type": "audio_aac",
-                "data": audio_b64,
-                "seq": seq,
-                "mime": getattr(tts, "mime_type", "audio/aac"),
-            })
+            await websocket.send_json(
+                {
+                    "type": "audio_aac",
+                    "data": audio_b64,
+                    "seq": seq,
+                    "mime": getattr(tts, "mime_type", "audio/aac"),
+                }
+            )
             seq += 1
 
         await asyncio.sleep(0.5)
-        await websocket.send_json({
-            "type": "response_complete",
-            "text": display_text,
-        })
+        await websocket.send_json(
+            {
+                "type": "response_complete",
+                "text": display_text,
+            }
+        )
         logger.info(f"Delivered background failure: {display_text[:100]}...")
 
     async def run_background_research(transcript: str) -> None:
@@ -1677,9 +1776,7 @@ async def websocket_endpoint(websocket: WebSocket):
             return
 
         if is_placeholder_gateway_response(response_text):
-            logger.info(
-                "Background voice research returned placeholder; clearing pending state."
-            )
+            logger.info("Background voice research returned placeholder; clearing pending state.")
             await deliver_background_failure(
                 "I couldn't get a finished background answer for that. Please try again with a narrower request.",
                 source_offset=session_offset,
@@ -1700,9 +1797,7 @@ async def websocket_endpoint(websocket: WebSocket):
             )
             return
 
-        logger.warning(
-            "Background voice research returned no clean final; clearing pending state."
-        )
+        logger.warning("Background voice research returned no clean final; clearing pending state.")
         await deliver_background_failure(
             "I couldn't get a clean background answer for that. Please try again with a narrower request.",
             source_offset=session_offset,
@@ -1713,9 +1808,12 @@ async def websocket_endpoint(websocket: WebSocket):
         nonlocal voice_result_max_chars, voice_result_max_sentences
         nonlocal pending_email_copy_request, last_spoken_answer
         nonlocal background_pending_since
+        nonlocal active_tts_task
         if not transcript.strip():
             return
-        voice_result_max_chars, voice_result_max_sentences = voice_result_budget_for_prompt(transcript)
+        voice_result_max_chars, voice_result_max_sentences = voice_result_budget_for_prompt(
+            transcript
+        )
         intents = detect_voice_intents(transcript)
         wants_email_copy = "email_copy" in intents
         wants_background_research = "background_research" in intents
@@ -1727,11 +1825,13 @@ async def websocket_endpoint(websocket: WebSocket):
             wants_background_research = "background_research" in routed_intents
 
         if echo_transcript:
-            await websocket.send_json({
-                "type": "transcript",
-                "text": transcript,
-                "final": True,
-            })
+            await websocket.send_json(
+                {
+                    "type": "transcript",
+                    "text": transcript,
+                    "final": True,
+                }
+            )
         logger.info(f"Transcript: {transcript}")
 
         # TTS worker: pulls sentences off a queue, synthesizes AAC, sends audio.
@@ -1739,6 +1839,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
         async def tts_worker():
             seq = 0
+            speaking_announced = False
             while True:
                 sentence = await tts_queue.get()
                 if sentence is None:
@@ -1749,16 +1850,22 @@ async def websocket_endpoint(websocket: WebSocket):
                 logger.debug(f"Synthesizing audio [{seq}]: {speech_text[:60]}...")
                 aac_bytes = await tts.synthesize_aac(speech_text)
                 if aac_bytes:
+                    if not speaking_announced:
+                        await websocket.send_json({"type": "state", "state": "speaking"})
+                        speaking_announced = True
                     audio_b64 = base64.b64encode(aac_bytes).decode()
-                    await websocket.send_json({
-                        "type": "audio_aac",
-                        "data": audio_b64,
-                        "seq": seq,
-                        "mime": getattr(tts, "mime_type", "audio/aac"),
-                    })
+                    await websocket.send_json(
+                        {
+                            "type": "audio_aac",
+                            "data": audio_b64,
+                            "seq": seq,
+                            "mime": getattr(tts, "mime_type", "audio/aac"),
+                        }
+                    )
                 seq += 1
 
         tts_task = asyncio.create_task(tts_worker())
+        active_tts_task = tts_task
 
         SENTENCE_ENDS = [". ", "! ", "? ", ".\n", "!\n", "?\n"]
         full_response = ""
@@ -1786,15 +1893,20 @@ async def websocket_endpoint(websocket: WebSocket):
             is what made the standby line lag in front of the final answer.
             """
             nonlocal full_response, sentence_buffer
+            if text and is_silent_control_response(text):
+                logger.info("Suppressing silent OpenClaw control response")
+                return
             if not text and not flush:
                 return
             if text:
                 full_response += text
                 sentence_buffer += text
-                await websocket.send_json({
-                    "type": "response_chunk",
-                    "text": text,
-                })
+                await websocket.send_json(
+                    {
+                        "type": "response_chunk",
+                        "text": text,
+                    }
+                )
             while any(sep in sentence_buffer for sep in SENTENCE_ENDS):
                 earliest_idx = len(sentence_buffer)
                 for sep in SENTENCE_ENDS:
@@ -1863,7 +1975,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     await persist_delivery_state(session_offset=session_offset)
                     await emit_filtered("Done. I sent a clean copy to your email inbox.")
                 else:
-                    await emit_filtered("I could not send that email cleanly. Please try again in a minute.")
+                    await emit_filtered(
+                        "I could not send that email cleanly. Please try again in a minute."
+                    )
             else:
                 pending_email_copy_request = _make_pending_email_copy_request(
                     to_address=load_primary_email_address(),
@@ -1880,9 +1994,7 @@ async def websocket_endpoint(websocket: WebSocket):
             raw_stream_chars = len(full_response)
         elif is_orchestrator_backend and wants_background_research:
             await websocket.send_json({"type": "background_task_started"})
-            await emit_filtered(
-                "Working on it, I'll respond when finished."
-            )
+            await emit_filtered("Working on it, I'll respond when finished.")
             background_task = asyncio.create_task(run_background_research(routed_transcript))
             track_background_task(background_task)
         else:
@@ -1896,20 +2008,18 @@ async def websocket_endpoint(websocket: WebSocket):
             if commute_response:
                 pass
             elif is_orchestrator_backend:
-            # The OpenClaw gateway has two failure modes for native-thinking
-            # Gemini models: its streaming OpenAI-compat path emits an empty
-            # delta then [DONE], and its non-streaming path strips the
-            # <think>/<final> markers and returns the entire reasoning blob
-            # as flat prose in choices[0].message.content. Either way the
-            # gateway response text is unsafe to speak directly.
-            #
-            # The orchestrator's session JSONL still preserves the tagged
-            # contract correctly, so we bracket the turn with a byte-offset
-            # snapshot, run the gateway call, and pull the authoritative
-            # <final>...</final> block from the new tail of the JSONL.
-                session_path, session_offset = await snapshot_session_offset(
-                    session_owner_key
-                )
+                # The OpenClaw gateway has two failure modes for native-thinking
+                # Gemini models: its streaming OpenAI-compat path emits an empty
+                # delta then [DONE], and its non-streaming path strips the
+                # <think>/<final> markers and returns the entire reasoning blob
+                # as flat prose in choices[0].message.content. Either way the
+                # gateway response text is unsafe to speak directly.
+                #
+                # The orchestrator's session JSONL still preserves the tagged
+                # contract correctly, so we bracket the turn with a byte-offset
+                # snapshot, run the gateway call, and pull the authoritative
+                # <final>...</final> block from the new tail of the JSONL.
+                session_path, session_offset = await snapshot_session_offset(session_owner_key)
                 response_task = asyncio.create_task(
                     backend.chat(routed_transcript, user_key=session_id)
                 )
@@ -1951,12 +2061,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 # entry yet at snapshot time. The orchestrator creates the
                 # session file during the turn, so it's available now.
                 if session_path is None:
-                    session_path = await get_session_file_path(
-                        session_owner_key
-                    )
-                final_events = await read_assistant_final_events_after(
-                    session_path, session_offset
-                )
+                    session_path = await get_session_file_path(session_owner_key)
+                final_events = await read_assistant_final_events_after(session_path, session_offset)
                 if final_events:
                     delivered_session_message_ids.update(
                         str(event.get("id") or "")
@@ -1970,9 +2076,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     )
                     await persist_delivery_state(session_offset=latest_offset)
                 spoken: Optional[str] = (
-                    str(final_events[-1].get("text") or "").strip()
-                    if final_events
-                    else None
+                    str(final_events[-1].get("text") or "").strip() if final_events else None
                 )
 
                 if spoken and not is_incomplete_voice_answer(spoken):
@@ -2074,14 +2178,18 @@ async def websocket_endpoint(websocket: WebSocket):
         # Signal the worker to finish, then wait for all audio to be sent.
         await tts_queue.put(None)
         await tts_task
+        active_tts_task = None
 
         # Ensure we wait a tiny bit for the physical player buffer to drain before finishing.
         await asyncio.sleep(0.5)
 
-        await websocket.send_json({
-            "type": "response_complete",
-            "text": full_response,
-        })
+        await websocket.send_json(
+            {
+                "type": "response_complete",
+                "text": full_response,
+            }
+        )
+        await websocket.send_json({"type": "state", "state": "idle"})
         logger.info(f"Response complete: {full_response[:100]}...")
 
     async def deliver_task_result(
@@ -2093,13 +2201,18 @@ async def websocket_endpoint(websocket: WebSocket):
     ):
         """Deliver a completed background-task result directly to the client."""
         nonlocal last_spoken_answer, background_pending_since
+        if is_silent_control_response(result_text):
+            background_pending_since = None
+            await websocket.send_json({"type": "background_task_finished"})
+            await websocket.send_json({"type": "response_complete", "text": ""})
+            return
         display_text = cap_voice_result(
             result_text,
             max_chars=max_chars,
             max_sentences=max_sentences,
         )
         if not display_text:
-            display_text = clean_for_display(result_text).strip() or result_text.strip()
+            display_text = clean_for_display(result_text).strip()
         if not display_text:
             return
         last_spoken_answer = display_text
@@ -2115,10 +2228,12 @@ async def websocket_endpoint(websocket: WebSocket):
         background_pending_since = None
         await websocket.send_json({"type": "background_task_finished"})
         await websocket.send_json({"type": "assistant_turn_start"})
-        await websocket.send_json({
-            "type": "response_chunk",
-            "text": display_text,
-        })
+        await websocket.send_json(
+            {
+                "type": "response_chunk",
+                "text": display_text,
+            }
+        )
 
         seq = 0
         for chunk in split_text_for_tts(display_text):
@@ -2126,19 +2241,23 @@ async def websocket_endpoint(websocket: WebSocket):
             if not aac_bytes:
                 continue
             audio_b64 = base64.b64encode(aac_bytes).decode()
-            await websocket.send_json({
-                "type": "audio_aac",
-                "data": audio_b64,
-                "seq": seq,
-                "mime": getattr(tts, "mime_type", "audio/aac"),
-            })
+            await websocket.send_json(
+                {
+                    "type": "audio_aac",
+                    "data": audio_b64,
+                    "seq": seq,
+                    "mime": getattr(tts, "mime_type", "audio/aac"),
+                }
+            )
             seq += 1
 
         await asyncio.sleep(0.5)
-        await websocket.send_json({
-            "type": "response_complete",
-            "text": display_text,
-        })
+        await websocket.send_json(
+            {
+                "type": "response_complete",
+                "text": display_text,
+            }
+        )
         logger.info(f"Delivered task result: {display_text[:100]}...")
 
     async def watch_session_announces():
@@ -2148,18 +2267,14 @@ async def websocket_endpoint(websocket: WebSocket):
 
         state = await read_voice_delivery_state(session_owner_key)
         delivered_announce_task_ids.update(
-            str(task_id)
-            for task_id in (state.get("taskIds") or [])
-            if str(task_id).strip()
+            str(task_id) for task_id in (state.get("taskIds") or []) if str(task_id).strip()
         )
         delivered_session_message_ids.update(
             str(message_id)
             for message_id in (state.get("messageIds") or [])
             if str(message_id).strip()
         )
-        pending_email_copy_request = _normalize_pending_email_copy(
-            state.get("pendingEmailCopy")
-        )
+        pending_email_copy_request = _normalize_pending_email_copy(state.get("pendingEmailCopy"))
         if state.get("lastSpokenAnswer"):
             last_spoken_answer = state["lastSpokenAnswer"]
 
@@ -2201,14 +2316,11 @@ async def websocket_endpoint(websocket: WebSocket):
             # so this only fires when delivery genuinely never happened.
             if (
                 background_pending_since is not None
-                and (time.monotonic() - background_pending_since)
-                > BACKGROUND_PENDING_TIMEOUT_S
+                and (time.monotonic() - background_pending_since) > BACKGROUND_PENDING_TIMEOUT_S
             ):
                 in_flight = any(
-                    (task.get("ownerKey") or task.get("requesterSessionKey"))
-                    == session_owner_key
-                    and str(task.get("status"))
-                    in ("running", "pending", "queued", "started")
+                    (task.get("ownerKey") or task.get("requesterSessionKey")) == session_owner_key
+                    and str(task.get("status")) in ("running", "pending", "queued", "started")
                     for task in await get_tasks()
                 )
                 if not in_flight:
@@ -2240,7 +2352,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 item_id = str(item.get("id") or "").strip()
                 item_text = str(item.get("text") or "").strip()
                 item_max_chars = int(item.get("maxChars") or VOICE_RESULT_NORMAL_MAX_CHARS)
-                item_max_sentences = int(item.get("maxSentences") or VOICE_RESULT_NORMAL_MAX_SENTENCES)
+                item_max_sentences = int(
+                    item.get("maxSentences") or VOICE_RESULT_NORMAL_MAX_SENTENCES
+                )
                 if not item_id or item_id in delivered_session_message_ids:
                     delivered_outbox_ids.add(item_id)
                     continue
@@ -2307,9 +2421,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     # park on "Working on it" until the pending-state safety
                     # net fires several minutes later.
                     failure_text = session_failure_message(task)
-                    logger.info(
-                        f"Delivering session task failure {task_id}: {failure_text[:120]}"
-                    )
+                    logger.info(f"Delivering session task failure {task_id}: {failure_text[:120]}")
                     # An orphaned "send copy to gmail" pending request can no
                     # longer be fulfilled by an answer that never landed.
                     pending_email_copy_request = None
@@ -2335,10 +2447,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 # The completed result lives in the terminal/progress summary;
                 # the "task" column holds the original request, not the answer.
                 payload = (
-                    task.get("summary")
-                    or task.get("progressSummary")
-                    or task.get("task")
-                    or ""
+                    task.get("summary") or task.get("progressSummary") or task.get("task") or ""
                 ).strip()
                 if not payload:
                     logger.debug(f"Skipping empty announce payload for task {task_id}")
@@ -2392,9 +2501,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     continue
                 logger.info(f"Delivering session {event_kind} {event_id} to voice session")
                 result_text = (
-                    extract_task_result_text(payload)
-                    if event_kind == "announce"
-                    else payload
+                    extract_task_result_text(payload) if event_kind == "announce" else payload
                 )
                 if is_nonfinal_background_result(result_text):
                     logger.info(
@@ -2427,10 +2534,76 @@ async def websocket_endpoint(websocket: WebSocket):
             await remove_voice_result_outbox_entries(session_owner_key, delivered_outbox_ids)
             await persist_delivery_state(session_offset=session_file_offset)
 
-    # Run process_transcript as a background task so the receive loop
-    # stays responsive to pings (prevents timeout during long AI calls).
     active_task: asyncio.Task | None = None
     announce_task = asyncio.create_task(watch_session_announces())
+
+    async def cancel_active_response() -> None:
+        """Cancel both the parent response and its queue-blocked TTS worker."""
+        nonlocal active_task, active_tts_task
+        tasks = [
+            task for task in (active_tts_task, active_task) if task is not None and not task.done()
+        ]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        active_tts_task = None
+        active_task = None
+        if turn_engine:
+            turn_engine.set_agent_responding(False)
+
+    async def run_response(transcript: str, *, echo_transcript: bool = True) -> None:
+        try:
+            if turn_engine:
+                turn_engine.set_agent_responding(True)
+            await websocket.send_json({"type": "state", "state": "thinking"})
+            await process_transcript(transcript, echo_transcript=echo_transcript)
+        finally:
+            if active_tts_task and not active_tts_task.done():
+                active_tts_task.cancel()
+                await asyncio.gather(active_tts_task, return_exceptions=True)
+            if turn_engine:
+                turn_engine.set_agent_responding(False)
+
+    async def start_response(transcript: str, *, echo_transcript: bool = True) -> None:
+        nonlocal active_task
+        if active_task and not active_task.done():
+            await cancel_active_response()
+        active_task = asyncio.create_task(run_response(transcript, echo_transcript=echo_transcript))
+
+    async def process_committed_turn(event) -> None:
+        nonlocal is_listening, turn_counter
+        is_listening = False
+        turn_counter += 1
+        await websocket.send_json(
+            {
+                "type": "turn_committed",
+                "turn_id": turn_counter,
+                "reason": event.reason,
+            }
+        )
+        await websocket.send_json({"type": "listening_stopped"})
+        audio_data = prepare_audio_for_stt(event.audio, event.sample_rate)
+        transcript = await stt.transcribe(audio_data)
+        if transcript.strip():
+            await start_response(transcript)
+        else:
+            logger.info(
+                "Continuous turn produced no transcript; client should resume listening "
+                "(reason={})",
+                event.reason,
+            )
+            await websocket.send_json({"type": "no_speech"})
+            await websocket.send_json({"type": "state", "state": "idle"})
+
+    async def handle_turn_events(events) -> None:
+        for event in events:
+            if event.type == USER_SPEECH_STARTED:
+                await websocket.send_json({"type": "turn_started", "turn_id": turn_counter + 1})
+            elif event.type == EOT_PENDING:
+                await websocket.send_json({"type": "eot_pending", "turn_id": turn_counter + 1})
+            elif event.type == TURN_COMMITTED:
+                await process_committed_turn(event)
 
     try:
         while True:
@@ -2441,7 +2614,27 @@ async def websocket_endpoint(websocket: WebSocket):
                 is_listening = True
                 audio_buffer = []
                 listen_sample_rate = int(msg.get("sample_rate") or STT_TARGET_SAMPLE_RATE)
+                connection_mode = str(msg.get("mode") or connection_mode)
+                incoming_config = msg.get("config")
+                if isinstance(incoming_config, dict):
+                    turn_overrides = incoming_config
+                if connection_mode == "continuous":
+                    turn_engine = TurnEngine(
+                        config=TurnConfig.from_env(turn_overrides),
+                        vad=VoiceActivityDetector(),
+                        gate=semantic_gate,
+                        sample_rate=listen_sample_rate,
+                    )
+                    await websocket.send_json(
+                        {
+                            "type": "session_started",
+                            "mode": connection_mode,
+                            "resumed": resumed_record is not None,
+                            "config": turn_engine.config.as_dict(),
+                        }
+                    )
                 await websocket.send_json({"type": "listening_started"})
+                await websocket.send_json({"type": "state", "state": "listening"})
                 logger.debug("Started listening")
 
             elif msg["type"] == "cancel_listening":
@@ -2452,42 +2645,62 @@ async def websocket_endpoint(websocket: WebSocket):
             elif msg["type"] == "stop_listening":
                 is_listening = False
 
-                if audio_buffer:
+                if connection_mode == "continuous" and turn_engine:
+                    events = turn_engine.force_commit()
+                    if events:
+                        await handle_turn_events(events)
+                    else:
+                        await websocket.send_json({"type": "listening_stopped"})
+                elif audio_buffer:
                     audio_data = np.concatenate(audio_buffer)
                     audio_data = prepare_audio_for_stt(audio_data, listen_sample_rate)
                     logger.debug("Transcribing audio...")
                     transcript = await stt.transcribe(audio_data)
                     if transcript.strip():
-                        if active_task and not active_task.done():
-                            active_task.cancel()
-                        active_task = asyncio.create_task(process_transcript(transcript))
+                        await start_response(transcript)
                     else:
                         await websocket.send_json({"type": "no_speech"})
                         logger.debug("No speech transcript produced from buffered audio")
 
                 audio_buffer = []
-                await websocket.send_json({"type": "listening_stopped"})
+                if connection_mode != "continuous":
+                    await websocket.send_json({"type": "listening_stopped"})
                 logger.debug("Stopped listening")
 
             elif msg["type"] == "text_input":
                 transcript = (msg.get("text") or "").strip()
-                if active_task and not active_task.done():
-                    active_task.cancel()
-                active_task = asyncio.create_task(
-                    process_transcript(transcript, echo_transcript=False)
-                )
+                await start_response(transcript, echo_transcript=False)
 
             elif msg["type"] == "audio" and is_listening:
                 audio_bytes = base64.b64decode(msg["data"])
                 audio_np = np.frombuffer(audio_bytes, dtype=np.float32)
-                audio_buffer.append(audio_np)
-
-                if vad and len(audio_np) > 0:
+                if connection_mode == "continuous" and turn_engine:
+                    events = await asyncio.to_thread(turn_engine.feed, audio_np)
+                    await handle_turn_events(events)
+                else:
+                    audio_buffer.append(audio_np)
+                if connection_mode != "continuous" and vad and len(audio_np) > 0:
                     has_speech = vad.is_speech(audio_np, sample_rate=listen_sample_rate)
-                    await websocket.send_json({
-                        "type": "vad_status",
-                        "speech_detected": has_speech,
-                    })
+                    await websocket.send_json(
+                        {
+                            "type": "vad_status",
+                            "speech_detected": has_speech,
+                        }
+                    )
+
+            elif msg["type"] == "interrupt":
+                await cancel_active_response()
+                await websocket.send_json({"type": "tts_cancelled"})
+                await websocket.send_json({"type": "state", "state": "idle"})
+
+            elif msg["type"] == "session_stop":
+                await cancel_active_response()
+                is_listening = False
+                if turn_engine:
+                    turn_engine.reset()
+                if client_id:
+                    session_resume_registry.remove(client_id)
+                await websocket.send_json({"type": "session_stopped"})
 
             elif msg["type"] == "ping":
                 await websocket.send_json({"type": "pong"})
@@ -2503,8 +2716,16 @@ async def websocket_endpoint(websocket: WebSocket):
     finally:
         if announce_task and not announce_task.done():
             announce_task.cancel()
-        if active_task and not active_task.done():
-            active_task.cancel()
+        await cancel_active_response()
+        if client_id:
+            session_resume_registry.park(
+                ResumeRecord(
+                    client_id=client_id,
+                    session_id=session_id,
+                    mode=connection_mode,
+                    turn_config=turn_overrides,
+                )
+            )
 
 
 # Serve static files for client
@@ -2515,6 +2736,7 @@ if client_dir.exists():
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(
         "src.server.main:app",
         host=settings.host,

@@ -8,13 +8,12 @@ tags, tables, prompt leakage, etc.
 import re
 from typing import Optional
 
-
-_THINK_OPEN_RE = re.compile(r'<\s*think\b[^<>]*>', re.IGNORECASE)
-_THINK_CLOSE_RE = re.compile(r'<\s*/\s*think\s*>', re.IGNORECASE)
-_FINAL_OPEN_RE = re.compile(r'<\s*final\b[^<>]*>', re.IGNORECASE)
-_FINAL_CLOSE_RE = re.compile(r'<\s*/\s*final\s*>', re.IGNORECASE)
+_THINK_OPEN_RE = re.compile(r"<\s*think\b[^<>]*>", re.IGNORECASE)
+_THINK_CLOSE_RE = re.compile(r"<\s*/\s*think\s*>", re.IGNORECASE)
+_FINAL_OPEN_RE = re.compile(r"<\s*final\b[^<>]*>", re.IGNORECASE)
+_FINAL_CLOSE_RE = re.compile(r"<\s*/\s*final\s*>", re.IGNORECASE)
 _FINAL_BLOCK_RE = re.compile(
-    r'<\s*final\b[^<>]*>([\s\S]*?)<\s*/\s*final\s*>',
+    r"<\s*final\b[^<>]*>([\s\S]*?)<\s*/\s*final\s*>",
     re.IGNORECASE,
 )
 
@@ -88,8 +87,8 @@ def looks_like_reasoning_leak(text: str) -> bool:
 def strip_thinking(text: str) -> str:
     """Remove <think>…</think> blocks (Gemini/DeepSeek/orchestrator thinking tags)."""
     return re.sub(
-        r'<\s*think\b[^<>]*>[\s\S]*?<\s*/\s*think\s*>',
-        '',
+        r"<\s*think\b[^<>]*>[\s\S]*?<\s*/\s*think\s*>",
+        "",
         text,
         flags=re.IGNORECASE,
     )
@@ -101,27 +100,47 @@ def strip_final_wrappers(text: str) -> str:
     content between them. Used as defense in depth for messages that survived
     the streaming sanitizer with literal tag fragments embedded.
     """
-    text = _FINAL_OPEN_RE.sub('', text)
-    text = _FINAL_CLOSE_RE.sub('', text)
+    text = _FINAL_OPEN_RE.sub("", text)
+    text = _FINAL_CLOSE_RE.sub("", text)
     return text
+
+
+def is_silent_control_response(text: str) -> bool:
+    """Return True for OpenClaw's exact no-response control sentinel.
+
+    This is deliberately an exact normalized match so ordinary prose that
+    happens to mention ``NO_REPLY`` is still displayed and spoken.
+    """
+    if not text:
+        return False
+    normalized = strip_final_wrappers(strip_thinking(text)).strip()
+    return bool(
+        re.fullmatch(
+            r"""[`*_'"]*NO[\s_-]*REPLY[`*_'"]*[\s.!?]*""",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 def strip_tables(text: str) -> str:
     """Remove markdown table rows (lines dominated by pipes and dashes)."""
-    lines = text.split('\n')
-    cleaned = [l for l in lines if not re.match(r'^\s*\|', l)]
-    return '\n'.join(cleaned)
+    lines = text.split("\n")
+    cleaned = [line for line in lines if not re.match(r"^\s*\|", line)]
+    return "\n".join(cleaned)
 
 
 def clean_for_display(text: str) -> str:
     """Clean response text for on-screen display (lighter than TTS cleaning)."""
     if not text:
         return text
+    if is_silent_control_response(text):
+        return ""
     text = strip_thinking(text)
     text = strip_final_wrappers(text)
     text = strip_tables(text)
-    text = re.sub(r'```[\s\S]*?```', '', text)
-    text = re.sub(r'\s{3,}', '\n\n', text)
+    text = re.sub(r"```[\s\S]*?```", "", text)
+    text = re.sub(r"\s{3,}", "\n\n", text)
     return text.strip()
 
 
@@ -133,40 +152,42 @@ def clean_for_speech(text: str) -> str:
     """
     if not text:
         return text
+    if is_silent_control_response(text):
+        return ""
 
     text = strip_thinking(text)
     text = strip_final_wrappers(text)
     text = strip_tables(text)
 
     # Remove code blocks (``` … ```)
-    text = re.sub(r'```[\s\S]*?```', ' code block omitted ', text)
-    text = re.sub(r'`([^`]+)`', r'\1', text)
+    text = re.sub(r"```[\s\S]*?```", " code block omitted ", text)
+    text = re.sub(r"`([^`]+)`", r"\1", text)
 
     # Remove markdown headers
-    text = re.sub(r'^#{1,6}\s*', '', text, flags=re.MULTILINE)
+    text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)
 
     # Remove bold/italic markers
-    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
-    text = re.sub(r'\*([^*]+)\*', r'\1', text)
-    text = re.sub(r'__([^_]+)__', r'\1', text)
-    text = re.sub(r'_([^_]+)_', r'\1', text)
+    text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
+    text = re.sub(r"\*([^*]+)\*", r"\1", text)
+    text = re.sub(r"__([^_]+)__", r"\1", text)
+    text = re.sub(r"_([^_]+)_", r"\1", text)
 
     # Hashtags → keep the word
-    text = re.sub(r'#(\w+)', r'\1', text)
+    text = re.sub(r"#(\w+)", r"\1", text)
 
     # URLs and markdown links
-    text = re.sub(r'https?://\S+', '', text)
-    text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+    text = re.sub(r"https?://\S+", "", text)
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
 
     # Technical emojis
-    text = re.sub(r'[🔗📦📁💻🖥️⚡🔧🛠️📝✅❌⚠️🚀🎯💡🔍📊📈📉🗂️📋]', '', text)
+    text = re.sub(r"[🔗📦📁💻🖥️⚡🔧🛠️📝✅❌⚠️🚀🎯💡🔍📊📈📉🗂️📋]", "", text)
 
     # Bullet points
-    text = re.sub(r'^\s*[-•]\s*', '', text, flags=re.MULTILINE)
-    text = re.sub(r'^\s*\d+\.\s*', '', text, flags=re.MULTILINE)
+    text = re.sub(r"^\s*[-•]\s*", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^\s*\d+\.\s*", "", text, flags=re.MULTILINE)
 
     # Colons before newlines → period
-    text = re.sub(r':\s*\n', '. ', text)
+    text = re.sub(r":\s*\n", ". ", text)
 
     # Real-estate/domain cleanup before provider TTS.
     text = _normalize_currency_for_speech(text)
@@ -180,17 +201,17 @@ def clean_for_speech(text: str) -> str:
     text = _normalize_times_for_speech(text)
 
     # Collapse whitespace
-    text = re.sub(r'\n{2,}', '. ', text)
-    text = re.sub(r'\n', ' ', text)
-    text = re.sub(r'\s{2,}', ' ', text)
+    text = re.sub(r"\n{2,}", ". ", text)
+    text = re.sub(r"\n", " ", text)
+    text = re.sub(r"\s{2,}", " ", text)
     text = text.strip()
-    text = re.sub(r'\.(\s*\.)+', '.', text)
+    text = re.sub(r"\.(\s*\.)+", ".", text)
 
     return text
 
 
 def _normalize_currency_for_speech(text: str) -> str:
-    money_re = re.compile(r'\$(\d[\d,]*)(?:\.(\d+))?(?:\s*([KMBkmb]))?\b')
+    money_re = re.compile(r"\$(\d[\d,]*)(?:\.(\d+))?(?:\s*([KMBkmb]))?\b")
     scale_words = {
         "k": "thousand",
         "m": "million",
@@ -321,7 +342,9 @@ _ADDRESS_SUFFIX_MAP = {
     "xing": "Crossing",
 }
 
-_ADDRESS_SUFFIX_PATTERN = "|".join(sorted((re.escape(key) for key in _ADDRESS_SUFFIX_MAP), key=len, reverse=True))
+_ADDRESS_SUFFIX_PATTERN = "|".join(
+    sorted((re.escape(key) for key in _ADDRESS_SUFFIX_MAP), key=len, reverse=True)
+)
 _ADDRESS_FOLLOWUP_TOKENS = (
     r"#|Apt\.?|Apartment|Unit|Suite|Ste\.?|Room|Rm\.?|Floor|Fl\.?|"
     r"and|in|near|at|on|off|for|with|by|to|from|newly|nearby|listed|listing|"
@@ -388,7 +411,9 @@ _STATE_ABBREVIATION_MAP = {
     "WY": "Wyoming",
     "DC": "District of Columbia",
 }
-_STATE_ABBREVIATION_PATTERN = "|".join(sorted((re.escape(key) for key in _STATE_ABBREVIATION_MAP), key=len, reverse=True))
+_STATE_ABBREVIATION_PATTERN = "|".join(
+    sorted((re.escape(key) for key in _STATE_ABBREVIATION_MAP), key=len, reverse=True)
+)
 _STATE_ABBREVIATION_RE = re.compile(
     rf"(?P<prefix>,\s*)(?P<state>{_STATE_ABBREVIATION_PATTERN})\b"
     rf"(?P<zip>\s+\d{{5}}(?:-\d{{4}})?)?"
@@ -405,7 +430,9 @@ def _normalize_address_suffixes_for_speech(text: str) -> str:
         if not replacement:
             return match.group(0)
         last_token = prefix.strip().split()[-1]
-        is_street_like = any(ch.isdigit() for ch in prefix) or any(ch.isupper() for ch in last_token)
+        is_street_like = any(ch.isdigit() for ch in prefix) or any(
+            ch.isupper() for ch in last_token
+        )
         if not is_street_like:
             return match.group(0)
         return f"{prefix}{replacement}"
@@ -480,20 +507,20 @@ class StreamSanitizer:
     e.g. "<thi" + "nk>", "<fina" + "l>", "</fina" + "l>".
     """
 
-    __slots__ = ('strict_final', '_buf', '_state')
+    __slots__ = ("strict_final", "_buf", "_state")
 
-    _OUTSIDE = 'outside'
-    _IN_THINK = 'in_think'
-    _IN_FINAL = 'in_final'
+    _OUTSIDE = "outside"
+    _IN_THINK = "in_think"
+    _IN_FINAL = "in_final"
 
     def __init__(self, strict_final: bool):
         self.strict_final = strict_final
-        self._buf = ''
+        self._buf = ""
         self._state = self._OUTSIDE
 
     def feed(self, chunk: str) -> str:
         if not chunk:
-            return ''
+            return ""
         self._buf += chunk
         out: list[str] = []
 
@@ -501,24 +528,24 @@ class StreamSanitizer:
             if self._state == self._IN_THINK:
                 close = _THINK_CLOSE_RE.search(self._buf)
                 if not close:
-                    if len(self._buf) > len('</think>'):
-                        self._buf = self._buf[-(len('</think>') - 1):]
+                    if len(self._buf) > len("</think>"):
+                        self._buf = self._buf[-(len("</think>") - 1) :]
                     break
-                self._buf = self._buf[close.end():]
+                self._buf = self._buf[close.end() :]
                 self._state = self._OUTSIDE
                 continue
 
             if self._state == self._IN_FINAL:
                 close = _FINAL_CLOSE_RE.search(self._buf)
                 if not close:
-                    tail_keep = min(len(self._buf), len('</final>') - 1)
+                    tail_keep = min(len(self._buf), len("</final>") - 1)
                     emit_to = len(self._buf) - tail_keep
                     if emit_to > 0:
                         out.append(self._buf[:emit_to])
                         self._buf = self._buf[emit_to:]
                     break
-                out.append(self._buf[:close.start()])
-                self._buf = self._buf[close.end():]
+                out.append(self._buf[: close.start()])
+                self._buf = self._buf[close.end() :]
                 self._state = self._OUTSIDE
                 continue
 
@@ -526,7 +553,7 @@ class StreamSanitizer:
             if not consumed:
                 break
 
-        return ''.join(out)
+        return "".join(out)
 
     def _consume_outside(self, out: list[str]) -> bool:
         """
@@ -550,12 +577,12 @@ class StreamSanitizer:
             self._state = next_state
             return True
 
-        lt_idx = self._buf.find('<')
+        lt_idx = self._buf.find("<")
 
         if lt_idx == -1:
             if not self.strict_final and self._buf:
                 out.append(self._buf)
-            self._buf = ''
+            self._buf = ""
             return False
 
         if lt_idx > 0:
@@ -566,10 +593,10 @@ class StreamSanitizer:
 
         suffix_lower = self._buf.lower()
         if (
-            '<think'.startswith(suffix_lower)
-            or '<final'.startswith(suffix_lower)
-            or suffix_lower.startswith('<think')
-            or suffix_lower.startswith('<final')
+            "<think".startswith(suffix_lower)
+            or "<final".startswith(suffix_lower)
+            or suffix_lower.startswith("<think")
+            or suffix_lower.startswith("<final")
         ):
             return False
 
@@ -588,18 +615,15 @@ class StreamSanitizer:
           upstream truncation).
         - In lenient mode: emit any pending text that wasn't a partial tag.
         """
-        out = ''
+        out = ""
         if self._state == self._IN_FINAL:
             out = self._buf
         elif self._state == self._OUTSIDE and not self.strict_final:
             tail = self._buf
-            if tail and (
-                '<think'.startswith(tail.lower())
-                or '<final'.startswith(tail.lower())
-            ):
-                tail = ''
+            if tail and ("<think".startswith(tail.lower()) or "<final".startswith(tail.lower())):
+                tail = ""
             out = tail
-        self._buf = ''
+        self._buf = ""
         self._state = self._OUTSIDE
         return out
 
@@ -607,11 +631,11 @@ class StreamSanitizer:
 def estimate_speech_duration(text: str, wpm: int = 150) -> float:
     """
     Estimate speech duration in seconds.
-    
+
     Args:
         text: Text to speak
         wpm: Words per minute (default 150 for natural speech)
-    
+
     Returns:
         Estimated duration in seconds
     """
@@ -724,10 +748,10 @@ def _parse_time_token(token: str) -> Optional[tuple[int, int]]:
     """
     t = token.strip().lower()
     mer = None
-    m_mer = re.search(r'([ap])\.?\s*m\.?$', t)
+    m_mer = re.search(r"([ap])\.?\s*m\.?$", t)
     if m_mer:
         mer = m_mer.group(1)
-        t = re.sub(r'([ap])\.?\s*m\.?$', '', t).strip()
+        t = re.sub(r"([ap])\.?\s*m\.?$", "", t).strip()
 
     hour: Optional[int] = None
     minute: Optional[int] = None

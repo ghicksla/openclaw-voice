@@ -12,18 +12,18 @@ import sys
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.server.text_utils import (
     StreamSanitizer,
     clean_for_display,
     clean_for_speech,
     extract_last_final,
+    is_silent_control_response,
     looks_like_reasoning_leak,
     strip_final_wrappers,
     strip_thinking,
 )
-
 
 # ---------------------------------------------------------------------------
 # clean_for_speech (existing real-estate / address coverage, restored)
@@ -121,6 +121,29 @@ def test_clean_for_display_strips_think_and_final_tags():
 def test_clean_for_speech_strips_think_and_final_tags():
     raw = "<think>plan</think><final>Hello, friend.</final>"
     assert clean_for_speech(raw).strip() == "Hello, friend."
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "NO_REPLY",
+        " no reply ",
+        "No-Reply.",
+        "`NO_REPLY`",
+        "<final>NO_REPLY</final>",
+        "<think>stay silent</think><final>NO_REPLY</final>",
+    ],
+)
+def test_silent_control_response_is_suppressed(text):
+    assert is_silent_control_response(text)
+    assert clean_for_display(text) == ""
+    assert clean_for_speech(text) == ""
+
+
+def test_silent_control_response_does_not_hide_normal_prose():
+    text = "The token NO_REPLY should not be spoken by the voice layer."
+    assert not is_silent_control_response(text)
+    assert clean_for_display(text) == text
 
 
 # ---------------------------------------------------------------------------
@@ -269,18 +292,18 @@ def test_strict_recovers_real_world_leaked_screenshot_payload():
     only the inner <final> text should reach TTS / display."""
     s = StreamSanitizer(strict_final=True)
     leaked_payload = (
-        "The user wants to fix the \"real estate clone job\". Looking at the "
+        'The user wants to fix the "real estate clone job". Looking at the '
         "cron history, the `real-estate-scout` job recently failed with a "
-        "timeout, and there have been previous \"no space left on device\" "
+        'timeout, and there have been previous "no space left on device" '
         "errors. \n\nWait, I should check if there's a file specifically called "
-        "\"clone\" or related in `tools/`. \nThe `ls -R | grep -i clone` "
+        '"clone" or related in `tools/`. \nThe `ls -R | grep -i clone` '
         "didn't show much useful.\nBut wait, the `cron list` showed:\n"
         "`real-estate-scout` - id `fb8ce8fc-f420-4062-ae53-b58ac5255027`.\n\n"
-        "Actually, the user said \"fix the real estate clone job\". \n"
+        'Actually, the user said "fix the real estate clone job". \n'
         "I'll just spawn the sub-agent with that exact task description and "
         "let it investigate.\n\nVoice style: 1-2 short sentences, no markdown.\n"
         "\"I'll get Claude Sonnet on it right away. I'm spawning a sub-agent "
-        "now to investigate and fix the real estate job.\""
+        'now to investigate and fix the real estate job."'
         "<final>I'll get Claude Sonnet on it right away. I'm spawning a "
         "sub-agent now to investigate and fix the real estate job.</final>"
     )
@@ -307,7 +330,7 @@ def test_strict_recovers_real_world_leaked_screenshot_payload():
 )
 @pytest.mark.parametrize("chunk_size", [1, 2, 3, 5, 13, 64])
 def test_strict_is_chunk_invariant(payload: str, chunk_size: int):
-    chunks = [payload[i:i + chunk_size] for i in range(0, len(payload), chunk_size)]
+    chunks = [payload[i : i + chunk_size] for i in range(0, len(payload), chunk_size)]
     full_at_once = _drive(StreamSanitizer(strict_final=True), [payload])
     chunked = _drive(StreamSanitizer(strict_final=True), chunks)
     assert chunked == full_at_once
@@ -371,11 +394,11 @@ def test_looks_like_reasoning_leak_catches_first_person_planning():
 def test_looks_like_reasoning_leak_catches_real_screenshot_payload():
     """The exact pattern from the May 8 voice screenshot the user reported."""
     leak = (
-        "The user is asking \"What is the next best route\" in voice mode.\n"
+        'The user is asking "What is the next best route" in voice mode.\n'
         "According to the prompt instructions:\n"
-        "- \"What is the next best route\" usually refers to a regular route.\n"
-        "Wait, the prompt says \"For calendar/reminder questions, check "
-        "calendar/reminders only\".\n"
+        '- "What is the next best route" usually refers to a regular route.\n'
+        'Wait, the prompt says "For calendar/reminder questions, check '
+        'calendar/reminders only".\n'
         "Let's check the calendar for the next event.\n"
         "I'll check the calendar list."
     )
@@ -387,10 +410,7 @@ def test_looks_like_reasoning_leak_passes_short_clean_answer():
 
 
 def test_looks_like_reasoning_leak_passes_clean_commute_answer():
-    answer = (
-        "The Google Maps estimate is twenty-one minutes right now "
-        "with light traffic."
-    )
+    answer = "The Google Maps estimate is twenty-one minutes right now " "with light traffic."
     assert looks_like_reasoning_leak(answer) is False
 
 

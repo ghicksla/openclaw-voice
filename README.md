@@ -18,6 +18,8 @@ as a standalone public fork even before any upstream merge.
 - **Durable delayed delivery** for long-running tasks (reconnect-safe delivery state + outbox replay).
 - **Reconnect-safe email copy flow** so "send a copy to my email" can complete after delayed results.
 - **Voice UI improvements** for background task states, continuous mode behavior, and push-to-talk/tap interactions.
+- **Semantic continuous turns** with server-owned endpointing, bounded patience, and manual interruption.
+- **Reconnect-safe browser sessions** with exponential backoff and mobile audio recovery.
 - **Environment path overrides** for running outside a default local OpenClaw filesystem layout.
 
 ### Fork At A Glance
@@ -40,7 +42,7 @@ If you are evaluating this fork, prioritize the OpenClaw-mode notes in:
 |---------|-------------|
 | 🎤 **Local STT** | Whisper runs locally via faster-whisper. Your voice never leaves your machine. |
 | 🔊 **Streaming TTS** | ElevenLabs with sentence-by-sentence streaming. Hear responses while they generate. |
-| 🎯 **Voice Activity Detection** | Silero VAD filters background noise. Works in noisy environments. |
+| 🎯 **Voice Activity Detection** | WebRTC VAD gates speech; optional Smart Turn semantics decide when a thought is complete. |
 | 🧹 **Smart Text Cleaning** | Strips markdown, hashtags, URLs before TTS. No more "hash hash". |
 | 🔌 **Any AI Backend** | OpenAI, Claude, or full OpenClaw agent with memory and tools. |
 | 🛡️ **Tagged-Final Output Guard** | In OpenClaw mode, streams only `<final>...</final>` content to prevent reasoning leaks. |
@@ -104,8 +106,45 @@ PYTHONPATH=. ELEVENLABS_API_KEY="$ELEVENLABS_API_KEY" OPENAI_API_KEY="$OPENAI_AP
 | `OPENCLAW_STT_MODEL` | No | `base` | Whisper model size |
 | `OPENCLAW_STT_DEVICE` | No | `auto` | `auto` / `cpu` / `cuda` / `mps` |
 | `OPENCLAW_REQUIRE_AUTH` | No | `false` | Require API keys for clients |
+| `OPENCLAW_SESSION_GRACE_SECONDS` | No | `600` | Browser reconnect/resume window, clamped to one hour |
 
 *One of `OPENAI_API_KEY` or `OPENCLAW_GATEWAY_URL` required.
+
+### Semantic Continuous Turns
+
+Continuous mode streams microphone audio until the server detects speech, waits
+for a natural pause, and asks Smart Turn whether the thought is complete. If the
+model is unavailable, a bounded silence timeout keeps continuous mode usable.
+Hold-to-talk remains client-controlled and unchanged.
+
+```bash
+uv sync --extra semantic --extra stt
+python scripts/download_models.py smart-turn
+```
+
+Turn behavior is configurable with:
+
+- `OPENCLAW_TURN_MIN_SPEECH_FRAMES` (default `4`)
+- `OPENCLAW_TURN_MIN_SILENCE_SECS` (default `1.8`)
+- `OPENCLAW_TURN_FALLBACK_SILENCE_SECS` (default `2.4`)
+- `OPENCLAW_TURN_RECHECK_INTERVAL_SECS` (default `2.0`)
+- `OPENCLAW_TURN_PATIENCE_CEILING_SECS` (default `18`, maximum `20`)
+- `OPENCLAW_TURN_MAX_TURN_SECS` (default `45`)
+- `OPENCLAW_TURN_SEMANTIC_ENABLED` (default `true`)
+- `OPENCLAW_TURN_SEMANTIC_THRESHOLD` (default `0.5`)
+
+The Smart Turn inference path is adapted from
+[pipecat-ai/smart-turn](https://github.com/pipecat-ai/smart-turn) under its
+BSD-2-Clause license.
+
+### Mobile and Bluetooth Behavior
+
+On iOS, microphone tracks are released between the user turn and TTS playback.
+This lets car audio return from the low-quality hands-free call route to normal
+media playback. Consequently, spoken barge-in is intentionally unavailable
+while the assistant is speaking; tap the voice control (or press Space) to
+interrupt immediately. The client then reacquires the microphone for the next
+continuous turn.
 
 <details>
 <summary>Advanced OpenClaw path overrides (optional)</summary>
@@ -252,8 +291,11 @@ server {
 Connect to `ws://localhost:8765/ws`:
 
 ```javascript
-// Start recording
-{ "type": "start_listening" }
+// Start hold-to-talk recording
+{ "type": "start_listening", "mode": "push_to_talk", "sample_rate": 16000 }
+
+// Start server-owned continuous recording
+{ "type": "start_listening", "mode": "continuous", "sample_rate": 16000, "config": {} }
 
 // Send audio (base64 PCM float32, 16kHz)
 { "type": "audio", "data": "base64..." }
@@ -261,11 +303,19 @@ Connect to `ws://localhost:8765/ws`:
 // Stop recording
 { "type": "stop_listening" }
 
+// Immediately cancel the current AI/TTS response
+{ "type": "interrupt" }
+
 // Receive events:
 { "type": "transcript", "text": "...", "final": true }
 { "type": "response_chunk", "text": "..." }        // Streaming text
-{ "type": "audio_chunk", "data": "...", "sample_rate": 24000 }  // Streaming audio
+{ "type": "audio_aac", "data": "...", "mime": "audio/aac" }    // Streaming audio
 { "type": "response_complete", "text": "..." }     // Full response
+{ "type": "turn_started", "turn_id": 1 }           // Server detected speech
+{ "type": "eot_pending", "turn_id": 1 }            // Semantic completion check
+{ "type": "turn_committed", "turn_id": 1, "reason": "semantic" }
+{ "type": "state", "state": "listening" }           // listening/thinking/speaking/idle
+{ "type": "tts_cancelled" }                         // Client must flush queued playback
 { "type": "background_task_started" }              // Deferred task accepted
 { "type": "background_task_finished" }             // Deferred task result delivered
 { "type": "assistant_turn_start" }                 // Resume normal listening flow
@@ -278,7 +328,8 @@ Connect to `ws://localhost:8765/ws`:
 - [x] Whisper STT (local)
 - [x] ElevenLabs TTS
 - [x] Streaming TTS (sentence-by-sentence)
-- [x] Voice Activity Detection (Silero)
+- [x] Voice Activity Detection (WebRTC VAD)
+- [x] Semantic end-of-turn detection (optional Smart Turn model)
 - [x] Text cleaning (markdown/hashtags/URLs)
 - [x] Continuous conversation mode
 - [x] OpenClaw gateway integration
@@ -294,7 +345,8 @@ MIT License — see [LICENSE](LICENSE).
 
 - [faster-whisper](https://github.com/guillaumekln/faster-whisper) — Local STT
 - [ElevenLabs](https://elevenlabs.io) — Text-to-Speech
-- [Silero VAD](https://github.com/snakers4/silero-vad) — Voice Activity Detection
+- [WebRTC VAD](https://github.com/wiseman/py-webrtcvad) — Speech gating
+- [pipecat-ai Smart Turn](https://github.com/pipecat-ai/smart-turn) — Semantic endpointing
 - Built for [OpenClaw](https://openclaw.ai)
 
 ---

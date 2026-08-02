@@ -12,6 +12,13 @@ faster-whisper>=1.0.0
 scipy>=1.11.0
 noisereduce>=3.0.0
 
+# Optional semantic turn detection (install only for continuous mode).
+# silero-vad is packaged for compatibility with Smart Turn deployments;
+# this fork continues to use WebRTC VAD for speech gating.
+onnxruntime>=1.23.2
+transformers>=5.14.1
+silero-vad>=6.2.1
+
 openai>=1.6.0
 httpx>=0.26.0
 loguru>=0.7.2
