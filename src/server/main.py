@@ -1931,9 +1931,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 sentence_buffer = ""
                 await tts_queue.put(stripped_tail)
 
+        local_response_handled = False
         if is_local_time_request(transcript):
             await emit_filtered(build_local_time_response())
             raw_stream_chars = len(full_response)
+            local_response_handled = True
         elif compound_email_task:
             # The compound regex (verb + task + target) is strong enough that
             # its match alone is evidence the user wants X done AND the result
@@ -1948,7 +1950,9 @@ async def websocket_endpoint(websocket: WebSocket):
             await persist_delivery_state(session_offset=session_offset)
             wants_email_copy = False
 
-        if wants_email_copy:
+        if local_response_handled:
+            pass
+        elif wants_email_copy:
             session_path, session_offset = await snapshot_session_offset(session_owner_key)
             delay_email_copy = should_delay_email_copy_request(
                 transcript,
@@ -2030,31 +2034,43 @@ async def websocket_endpoint(websocket: WebSocket):
                     )
                 except asyncio.TimeoutError:
                     logger.info(
-                        "Gateway voice turn exceeded {}s; keeping request alive and sending standby.",
+                        "Gateway voice turn exceeded {}s; handing it off for background delivery.",
                         FOREGROUND_STANDBY_AFTER_S,
                     )
                     foreground_standby_started = True
+                    background_pending_since = time.monotonic()
                     await websocket.send_json({"type": "background_task_started"})
-                    # flush=True so the standby utterance ships to TTS now and
-                    # doesn't sit in the sentence buffer until the final answer
-                    # arrives — otherwise the partial trailing sentence gets
-                    # glued to the next emit and only plays in front of the
-                    # final response.
                     await emit_filtered(
                         "Working on it, I'll respond when finished.",
                         flush=True,
                     )
-                    try:
-                        response_text = await asyncio.wait_for(
-                            asyncio.shield(response_task),
-                            timeout=BACKGROUND_RESEARCH_TIMEOUT_S,
+                    background_task = asyncio.create_task(
+                        monitor_detached_gateway_response(
+                            response_task,
+                            session_path=session_path,
+                            session_offset=session_offset,
+                            max_chars=voice_result_max_chars,
+                            max_sentences=voice_result_max_sentences,
                         )
-                    except asyncio.TimeoutError:
-                        logger.warning(
-                            "Gateway voice turn exceeded additional {}s; keeping pending state and waiting for any later session final.",
-                            BACKGROUND_RESEARCH_TIMEOUT_S,
-                        )
-                        response_text = ""
+                    )
+                    track_background_task(background_task)
+
+                    # Complete this acknowledgement as its own turn. The
+                    # detached task and session watcher deliver the answer in
+                    # a later turn, rather than appending it to this TTS queue.
+                    await tts_queue.put(None)
+                    await tts_task
+                    active_tts_task = None
+                    await asyncio.sleep(0.5)
+                    await websocket.send_json(
+                        {
+                            "type": "response_complete",
+                            "text": full_response,
+                        }
+                    )
+                    await websocket.send_json({"type": "state", "state": "idle"})
+                    logger.info("Foreground voice turn handed off to background delivery.")
+                    return
                 raw_stream_chars = len(response_text)
                 # Re-resolve the session JSONL path: when this is the first
                 # turn on a fresh WS, sessions.json may not have had the
@@ -2259,6 +2275,65 @@ async def websocket_endpoint(websocket: WebSocket):
             }
         )
         logger.info(f"Delivered task result: {display_text[:100]}...")
+
+    async def monitor_detached_gateway_response(
+        response_task: asyncio.Task[str],
+        *,
+        session_path: Optional[Path],
+        session_offset: Optional[int],
+        max_chars: int,
+        max_sentences: int,
+    ) -> None:
+        """Finish a timed-out foreground request through background delivery."""
+        try:
+            response_text = await asyncio.wait_for(
+                asyncio.shield(response_task),
+                timeout=BACKGROUND_RESEARCH_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Detached gateway voice turn exceeded {}s.",
+                BACKGROUND_RESEARCH_TIMEOUT_S,
+            )
+            await deliver_background_failure(
+                "I couldn't finish that background request in time. Please try again with a narrower request.",
+                source_offset=session_offset,
+            )
+            return
+        except Exception as e:
+            logger.error(f"Detached gateway voice turn failed: {e}")
+            await deliver_background_failure(
+                "I couldn't finish that background request cleanly. Please try again in a minute.",
+                source_offset=session_offset,
+            )
+            return
+
+        if session_path is None:
+            session_path = await get_session_file_path(session_owner_key)
+        final_events = await read_assistant_final_events_after(session_path, session_offset)
+        if final_events:
+            # The session watcher owns final-event delivery, including durable
+            # de-duplication and reconnect handling.
+            return
+
+        if is_placeholder_gateway_response(response_text):
+            logger.info("Detached gateway turn returned a placeholder; awaiting session final.")
+            return
+
+        cleaned = clean_for_display(response_text).strip()
+        if cleaned and not looks_like_reasoning_leak(response_text):
+            await enqueue_voice_result_outbox(
+                session_owner_key,
+                cap_voice_result(cleaned, max_chars=max_chars, max_sentences=max_sentences),
+                max_chars=max_chars,
+                max_sentences=max_sentences,
+            )
+            return
+
+        await deliver_background_failure(
+            "I couldn't get a clean background answer for that. Please try again with a narrower request.",
+            source_offset=session_offset,
+        )
 
     async def watch_session_announces():
         """Deliver new background-task completion announcements for this session."""
