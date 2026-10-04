@@ -46,6 +46,26 @@ def test_extract_compound_email_task_text_keeps_task_part():
     assert extract_compound_email_task_text("Please email this to my inbox") is None
 
 
+DICTATED_LIST_REQUEST = (
+    "Here is a list I want you to write down and send to me in an email. "
+    "One, cherries, two, biscuits, three, milk. Send me an email with those things "
+    "to my Gmail address, please. Thank you."
+)
+
+
+def test_dictated_list_email_request_stays_with_the_assistant():
+    assert extract_compound_email_task_text(DICTATED_LIST_REQUEST) is None
+    assert not is_send_copy_to_email_request(DICTATED_LIST_REQUEST)
+    assert "email_copy" not in detect_voice_intents(DICTATED_LIST_REQUEST)
+
+
+def test_compound_task_keeps_everything_before_trailing_email_phrase():
+    text = "Research the best home EV chargers under 600 dollars and email me the results"
+    assert extract_compound_email_task_text(text) == (
+        "Research the best home EV chargers under 600 dollars"
+    )
+
+
 def test_send_copy_intent_rejects_non_email_prompt():
     assert not is_send_copy_to_email_request("Can you summarize that")
     assert not is_send_copy_to_email_request("What is the product outlook this year")

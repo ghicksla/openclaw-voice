@@ -824,7 +824,10 @@ def detect_voice_intents(text: str) -> set[str]:
 
     if is_send_copy_to_email_request(text):
         intents.add("email_copy")
-    elif lower:
+    elif lower and (
+        len(lower.split()) <= EMAIL_COPY_MAX_LEAD_WORDS + 6
+        or extract_compound_email_task_text(text)
+    ):
         # Semantic fallback so we do not need to enumerate every phrasing.
         # Requires an anaphoric/copy object word so future-tense asks like
         # "email me the news in the morning" stay on the orchestrator path.
@@ -919,17 +922,46 @@ def should_delay_email_copy_request(text: str, *, has_background_work: bool = Fa
     return has_background_work or any(marker in lower for marker in delayed_markers)
 
 
+# Words that may trail an email phrase without carrying new request content,
+# e.g. "...email it to my Gmail account when done, thanks".
+_EMAIL_TAIL_FILLER = frozenset(
+    {
+        "a", "also", "an", "and", "account", "address", "answer", "as",
+        "complete", "completed", "copy", "details", "done", "email", "findings",
+        "finished", "gmail", "inbox", "is", "it", "it's", "its", "mailbox", "me",
+        "my", "of", "ok", "okay", "once", "please", "possible", "ready", "report",
+        "result", "results", "soon", "summary", "thank", "thanks", "that", "the",
+        "then", "this", "to", "when", "you",
+    }
+)
+
+# A pure "email me that" follow-up has at most this many words before the
+# email phrase ("That's great, send a copy of that to my Gmail").
+EMAIL_COPY_MAX_LEAD_WORDS = 8
+
+
+def _is_email_tail_filler(tail: str) -> bool:
+    return set(re.findall(r"[a-z']+", tail.lower())) <= _EMAIL_TAIL_FILLER
+
+
 def extract_compound_email_task_text(text: str) -> Optional[str]:
-    """Return the task part from "do X and email it when done" style requests."""
+    """Return the task part from "do X and email it when done" style requests.
+
+    Only fires when the first email phrase closes the utterance. If the user
+    keeps talking after it (e.g. dictating list items), the whole request must
+    reach the orchestrator untouched.
+    """
     match = re.search(
         r"\b(?:and|then|also)?\s*"
         r"(?:send|email|mail|forward|share|deliver)\b"
-        r".{0,80}"
+        r"[^.!?]{0,80}"
         r"\b(?:email|gmail|inbox|mailbox|me|myself)\b",
         text,
         flags=re.IGNORECASE,
     )
     if not match or match.start() < 8:
+        return None
+    if not _is_email_tail_filler(text[match.end():]):
         return None
 
     task_text = re.sub(
@@ -954,8 +986,15 @@ def is_send_copy_to_email_request(text: str) -> bool:
         r"\bsend a copy of (that|this|it)\b",
         r"\bemail (that|it|this|those|these) to my (gmail|email|inbox|mailbox)\b",
     )
-    if any(re.search(pattern, lower) for pattern in explicit_patterns):
-        return True
+    for pattern in explicit_patterns:
+        match = re.search(pattern, lower)
+        if not match:
+            continue
+        if not _is_email_tail_filler(lower[match.end():]):
+            continue
+        lead_words = len(lower[: match.start()].split())
+        if lead_words <= EMAIL_COPY_MAX_LEAD_WORDS or extract_compound_email_task_text(text):
+            return True
     return False
 
 
@@ -2072,12 +2111,14 @@ async def websocket_endpoint(websocket: WebSocket):
                     logger.info("Foreground voice turn handed off to background delivery.")
                     return
                 raw_stream_chars = len(response_text)
-                # Re-resolve the session JSONL path: when this is the first
-                # turn on a fresh WS, sessions.json may not have had the
-                # entry yet at snapshot time. The orchestrator creates the
-                # session file during the turn, so it's available now.
-                if session_path is None:
-                    session_path = await get_session_file_path(session_owner_key)
+                # Re-resolve the session JSONL path: the entry may not have
+                # existed at snapshot time, or the gateway may have rotated
+                # the session (daily/idle reset) and written this turn to a
+                # new file. A new file must be read from the start.
+                current_session_path = await get_session_file_path(session_owner_key)
+                if current_session_path and current_session_path != session_path:
+                    session_path = current_session_path
+                    session_offset = 0
                 final_events = await read_assistant_final_events_after(session_path, session_offset)
                 if final_events:
                     delivered_session_message_ids.update(
