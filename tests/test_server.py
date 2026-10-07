@@ -93,6 +93,19 @@ class TestServerHTTP:
         assert "OpenClaw Voice" in response.text
         assert "voice-button" in response.text
 
+    def test_health_endpoint(self, server):
+        """Health check responds without auth and reports gateway state."""
+        import httpx
+
+        ws_url, http_url = server
+        response = httpx.get(f"{http_url}/health")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["ok"] is True
+        assert body["service"] == "voice-chat"
+        assert set(body["gateway"]) >= {"configured", "reachable"}
+
 
 class TestServerWebSocket:
     """Test WebSocket functionality."""

@@ -1523,6 +1523,32 @@ async def index():
     return FileResponse("src/client/index.html", headers={"Cache-Control": "no-cache"})
 
 
+@app.get("/health")
+async def health():
+    """Lightweight ops smoke check. Exposes no secrets."""
+    import httpx
+
+    gateway_url = (
+        settings.openclaw_gateway_url or os.getenv("OPENCLAW_GATEWAY_URL") or ""
+    ).rstrip("/")
+    gateway: dict = {"configured": bool(gateway_url), "reachable": False}
+    if gateway_url:
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                resp = await client.get(f"{gateway_url}/health")
+                gateway["reachable"] = resp.status_code == 200
+                gateway["status_code"] = resp.status_code
+        except Exception as exc:  # noqa: BLE001 - health must never raise
+            gateway["error"] = type(exc).__name__
+
+    return {
+        "ok": True,
+        "status": "live",
+        "service": "voice-chat",
+        "gateway": gateway,
+    }
+
+
 @app.post("/api/keys")
 async def create_api_key(
     name: str,

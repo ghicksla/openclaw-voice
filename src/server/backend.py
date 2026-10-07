@@ -3,6 +3,7 @@ AI Backend module - connects to OpenAI, OpenClaw gateway, or custom backends.
 """
 
 import asyncio
+from datetime import datetime
 from typing import Optional, List, Dict, AsyncGenerator
 
 from loguru import logger
@@ -68,6 +69,24 @@ class AIBackend:
         else:
             logger.warning(f"Unknown backend type: {self.backend_type}")
     
+    def _build_gateway_voice_prompt(self, user_message: str) -> str:
+        """Wrap a transcript in the strict voice-mode instructions.
+
+        Includes the server's local date/time so the model answers time
+        questions from the host clock instead of guessing.
+        """
+        now_text = datetime.now().astimezone().strftime("%Y-%m-%d %I:%M %p %Z")
+        return (
+            "[Voice mode hard limit — reply in plain spoken English, 1-2 short sentences, no markdown. "
+            "Keep the required OpenClaw <think>...</think><final>...</final> format; put only the spoken answer inside <final>. "
+            "Do at most one targeted lookup. For calendar/reminder questions, check calendar/reminders only; "
+            "do not search Gmail, finance, broad memory, or narrate your checks. "
+            "If a location is not in the calendar/reminder, say you don't have it saved. "
+            f"Current local date/time is {now_text}. Use this exact local time when the user asks the time. "
+            "The voice client will read only the <final> text aloud.] "
+            f"{user_message}"
+        )
+
     async def chat(self, user_message: str, user_key: Optional[str] = None) -> str:
         """
         Send a message and get a response.
@@ -107,15 +126,7 @@ class AIBackend:
         history = self._history(user_key)
 
         if self._use_gateway_session_memory:
-            prefixed = (
-                "[Voice mode hard limit — reply in plain spoken English, 1-2 short sentences, no markdown. "
-                "Keep the required OpenClaw <think>...</think><final>...</final> format; put only the spoken answer inside <final>. "
-                "Do at most one targeted lookup. For calendar/reminder questions, check calendar/reminders only; "
-                "do not search Gmail, finance, broad memory, or narrate your checks. "
-                "If a location is not in the calendar/reminder, say you don't have it saved. "
-                "The voice client will read only the <final> text aloud.] "
-                f"{user_message}"
-            )
+            prefixed = self._build_gateway_voice_prompt(user_message)
             messages = [
                 {"role": "user", "content": prefixed},
             ]
@@ -155,15 +166,7 @@ class AIBackend:
         history = self._history(user_key)
 
         if self._use_gateway_session_memory:
-            prefixed = (
-                "[Voice mode hard limit — reply in plain spoken English, 1-2 short sentences, no markdown. "
-                "Keep the required OpenClaw <think>...</think><final>...</final> format; put only the spoken answer inside <final>. "
-                "Do at most one targeted lookup. For calendar/reminder questions, check calendar/reminders only; "
-                "do not search Gmail, finance, broad memory, or narrate your checks. "
-                "If a location is not in the calendar/reminder, say you don't have it saved. "
-                "The voice client will read only the <final> text aloud.] "
-                f"{user_message}"
-            )
+            prefixed = self._build_gateway_voice_prompt(user_message)
             messages = [
                 {"role": "user", "content": prefixed},
             ]
