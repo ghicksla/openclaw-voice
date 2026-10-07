@@ -86,6 +86,13 @@ class TestAIBackend:
         assert AIBackend().max_tokens == 500
         assert AIBackend(max_tokens=222).max_tokens == 222
     
+    def test_gateway_voice_prompt_includes_local_time(self):
+        """Gateway voice prompts carry the host clock and the user's message."""
+        prompt = AIBackend()._build_gateway_voice_prompt("what time is it")
+        assert prompt.startswith("[Voice mode hard limit")
+        assert "Current local date/time is " in prompt
+        assert prompt.endswith("what time is it")
+
     def test_clear_history(self):
         """Test conversation history can be cleared."""
         backend = AIBackend()
