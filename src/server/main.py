@@ -1515,12 +1515,28 @@ async def startup():
     logger.info("✅ OpenClaw Voice server ready!")
 
 
+def _index_response():
+    """Serve the voice page. Cache-Control keeps bookmarks on the current client."""
+    return FileResponse("src/client/index.html", headers={"Cache-Control": "no-cache"})
+
+
 @app.get("/")
 @app.get("/voice")
 @app.get("/voice/")
 async def index():
     """Serve the demo page."""
-    return FileResponse("src/client/index.html", headers={"Cache-Control": "no-cache"})
+    return _index_response()
+
+
+@app.get("/k/{api_key}")
+@app.get("/voice/k/{api_key}")
+async def index_with_key(api_key: str):
+    """First-load handoff when a query string would be dropped.
+
+    The client stores the key and can keep this path as the saved address.
+    The key is not logged here.
+    """
+    return _index_response()
 
 
 @app.get("/health")

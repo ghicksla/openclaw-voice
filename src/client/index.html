@@ -80,6 +80,60 @@
             cursor: pointer;
         }
 
+        /* Auth gate — shown when no API key in URL/storage (Safari home screen / bookmarks) */
+        .auth-gate {
+            background: rgba(255, 107, 53, 0.12);
+            border: 1px solid rgba(255, 107, 53, 0.35);
+            border-radius: 12px;
+            padding: 16px 20px;
+            margin-bottom: 20px;
+            display: none;
+            text-align: left;
+        }
+        .auth-gate.visible { display: block; }
+        .auth-gate h2 {
+            font-size: 1.05rem;
+            font-weight: 600;
+            color: #ff6b35;
+            margin-bottom: 8px;
+        }
+        .auth-gate p {
+            color: #ccc;
+            font-size: 0.9rem;
+            line-height: 1.4;
+            margin-bottom: 12px;
+        }
+        .auth-gate input {
+            width: 100%;
+            padding: 12px 14px;
+            border-radius: 8px;
+            border: 1px solid #444;
+            background: rgba(0, 0, 0, 0.35);
+            color: #fff;
+            font-size: 1rem;
+            margin-bottom: 10px;
+        }
+        .auth-gate input:focus {
+            outline: none;
+            border-color: #ff6b35;
+        }
+        .auth-gate button {
+            padding: 10px 28px;
+            background: #ff6b35;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .auth-gate .auth-hint {
+            margin-top: 10px;
+            margin-bottom: 0;
+            color: #888;
+            font-size: 0.8rem;
+        }
+
         /* Voice button */
         .voice-button {
             width: 120px; height: 120px;
@@ -241,6 +295,14 @@
             <button id="micPermBtn">Allow Microphone</button>
         </div>
 
+        <div class="auth-gate" id="authGate" role="dialog" aria-labelledby="authGateTitle">
+            <h2 id="authGateTitle">API key needed</h2>
+            <p id="authGateMsg">This address has no sign-in. Open the /k/ link, then reload that page.</p>
+            <input id="authKeyInput" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Paste API key (ocv_…)" />
+            <button type="button" id="authKeyBtn">Save &amp; Connect</button>
+            <p class="auth-hint">Save the address that still contains /k/. That is the address reload and the home screen need.</p>
+        </div>
+
         <button class="voice-button" id="voiceBtn" disabled>
             Hold to Talk
         </button>
@@ -275,6 +337,10 @@ const clearBtn    = document.getElementById('clearBtn');
 const loopBtn     = document.getElementById('loopBtn');
 const micBanner   = document.getElementById('micBanner');
 const micPermBtn  = document.getElementById('micPermBtn');
+const authGate    = document.getElementById('authGate');
+const authGateMsg = document.getElementById('authGateMsg');
+const authKeyInput= document.getElementById('authKeyInput');
+const authKeyBtn  = document.getElementById('authKeyBtn');
 const waveWrap    = document.getElementById('waveWrap');
 const waveCanvas  = document.getElementById('waveCanvas');
 const waveCtx     = waveCanvas.getContext('2d');
@@ -295,6 +361,15 @@ let continuousMode = false;
 // cycle in onAudioComplete does NOT re-arm listening behind the user's back.
 // Cleared the next time the user manually starts (taps the mic).
 let userPausedContinuous = false;
+// Hold-to-talk / PTT: true while the finger/mouse is down. startRecording is
+// async (getUserMedia + AudioContext). Without this, touchend often fires
+// before isRecording flips true, stopRecording no-ops, and the mic stays armed
+// until a later press — feeling "stuck" then suddenly working again.
+let pressActive = false;
+let startRecordingPromise = null;
+// Bumped on interrupt / new assistant turn so late audio_aac packets from a
+// cancelled TTS turn cannot re-wedge hasActiveResponse() after barge-in.
+let playbackGeneration = 0;
 let currentResponseElement = null;
 let streamingText = '';
 let modelName = ''; // <- ADDED
@@ -642,9 +717,11 @@ let needsPreroll = true;
 // each turn to wake up iOS audio hardware so the first word isn't clipped.
 const SILENT_PREROLL_WAV = 'data:audio/wav;base64,UklGRvQHAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YdAHAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==';
 
-// Browser-native STT
+// Browser-native STT. iOS Safari's Web Speech API often stops emitting results
+// after a few turns until a cooldown — hold/PTT then looks dead until it
+// "magically" recovers. Prefer server Whisper on iOS; keep browser STT elsewhere.
 const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
-const useBrowserSTT = !!SpeechRecognitionCtor;
+const useBrowserSTT = !!SpeechRecognitionCtor && !isIOS;
 let recognition = null;
 let localFinalTranscript = '';
 let localInterimTranscript = '';
@@ -653,6 +730,105 @@ let finishingRecognition = false;
 let awaitingServerTurn = false;
 
 // ========== Session / persistence ==========
+
+const API_KEY_STORAGE = 'openclaw_api_key';
+const API_KEY_COOKIE = 'openclaw_api_key';
+
+function readCookie(name) {
+    const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const m = document.cookie.match(new RegExp(`(?:^|; )${esc}=([^;]*)`));
+    return m ? decodeURIComponent(m[1]) : '';
+}
+
+function writeCookie(name, value) {
+    // Cookie survives Safari ↔ home-screen better than localStorage alone
+    // (standalone web apps often get a separate storage partition).
+    const secure = location.protocol === 'https:' ? '; Secure' : '';
+    document.cookie = `${name}=${encodeURIComponent(value)}; Path=/; Max-Age=34560000; SameSite=Lax${secure}`;
+}
+
+function clearCookie(name) {
+    const secure = location.protocol === 'https:' ? '; Secure' : '';
+    document.cookie = `${name}=; Path=/; Max-Age=0; SameSite=Lax${secure}`;
+}
+
+function persistApiKey(key) {
+    if (!key) return;
+    try { localStorage.setItem(API_KEY_STORAGE, key); } catch {}
+    try { writeCookie(API_KEY_COOKIE, key); } catch {}
+}
+
+function clearStoredApiKey() {
+    try { localStorage.removeItem(API_KEY_STORAGE); } catch {}
+    try { clearCookie(API_KEY_COOKIE); } catch {}
+}
+
+function readStoredApiKey() {
+    try {
+        const fromLs = localStorage.getItem(API_KEY_STORAGE) || '';
+        if (fromLs) return fromLs;
+    } catch {}
+    try { return readCookie(API_KEY_COOKIE) || ''; } catch {}
+    return '';
+}
+
+function extractApiKeyFromPath() {
+    const m = location.pathname.match(/\/k\/([^/]+)\/?$/);
+    return m ? decodeURIComponent(m[1]) : '';
+}
+
+function extractApiKeyFromHash() {
+    const hash = (location.hash || '').replace(/^#/, '');
+    if (!hash) return '';
+    if (hash.startsWith('api_key=')) {
+        return decodeURIComponent(hash.slice('api_key='.length).split('&')[0] || '');
+    }
+    try {
+        return new URLSearchParams(hash).get('api_key') || '';
+    } catch {
+        return '';
+    }
+}
+
+/** Resolve key from path → query → hash → localStorage → cookie. Keep /k/ in the address. */
+function resolveApiKey() {
+    const fromPath = extractApiKeyFromPath();
+    const fromQuery = new URLSearchParams(location.search).get('api_key') || '';
+    const fromHash = extractApiKeyFromHash();
+    if ((fromQuery || fromHash) && !fromPath) {
+        const key = fromQuery || fromHash;
+        const base = location.pathname.startsWith('/voice') ? '/voice' : '';
+        const url = new URL(location.href);
+        url.searchParams.delete('api_key');
+        url.hash = '';
+        url.pathname = `${base}/k/${encodeURIComponent(key)}`;
+        location.replace(`${url.pathname}${url.search}`);
+        return key;
+    }
+    const fromUrl = fromPath || fromQuery || fromHash;
+    if (fromUrl) {
+        persistApiKey(fromUrl);
+        return fromUrl;
+    }
+    const stored = readStoredApiKey();
+    if (stored) {
+        persistApiKey(stored);
+        return stored;
+    }
+    return '';
+}
+
+function showAuthGate(message) {
+    if (message) authGateMsg.textContent = message;
+    authGate.classList.add('visible');
+    setStatus('API key required');
+    clearTimeout(reconnectTimer);
+    voiceBtn.disabled = true;
+}
+
+function hideAuthGate() {
+    authGate.classList.remove('visible');
+}
 
 function getSessionId() {
     let id = localStorage.getItem('openclaw_session_id') || '';
@@ -711,24 +887,30 @@ function warmUpPlayer() {
     }).catch(() => {});
 }
 
-function queueAAC(b64, mime) {
+function queueAAC(b64, mime, generation = playbackGeneration) {
     const raw = atob(b64);
     const bytes = new Uint8Array(raw.length);
     for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
     const item = {
         mime: mime || 'audio/aac',
         bytes,
+        generation,
         envelopeFrames: null,
         envelopeFrameCount: 0,
         envelopeDurationSec: 0,
         envelopeReady: false
     };
+    if (generation !== playbackGeneration) return;
     aacQueue.push(item);
     buildPlaybackEnvelope(item);
     if (!aacPlaying) drainAACQueue();
 }
 
 function drainAACQueue() {
+    // Drop any chunks from an interrupted / superseded assistant turn.
+    while (aacQueue.length > 0 && aacQueue[0].generation !== playbackGeneration) {
+        aacQueue.shift();
+    }
     if (aacQueue.length === 0) { aacPlaying = false; onAudioComplete(); return; }
     aacPlaying = true;
     ensurePlaybackAnalyzer();
@@ -747,7 +929,10 @@ function drainAACQueue() {
     }
 
     const item = aacQueue.shift();
-    if (!item) { aacPlaying = false; onAudioComplete(); return; }
+    if (!item || item.generation !== playbackGeneration) {
+        drainAACQueue();
+        return;
+    }
     const mime = item.mime || 'audio/aac';
     if (currentBlobUrl) { URL.revokeObjectURL(currentBlobUrl); currentBlobUrl = null; }
 
@@ -761,6 +946,10 @@ function drainAACQueue() {
     player.src = currentBlobUrl;
     // For iOS first-word clipping: wait a tiny bit for the audio hardware to fully wake up
     setTimeout(() => {
+        if (item.generation !== playbackGeneration) {
+            drainAACQueue();
+            return;
+        }
         activePlaybackStartedAt = performance.now();
         player.play().catch(() => drainAACQueue());
     }, 60);
@@ -776,6 +965,12 @@ function flushAACQueue() {
     player.onerror = null;
     try { player.pause(); player.removeAttribute('src'); } catch {}
     if (currentBlobUrl) { URL.revokeObjectURL(currentBlobUrl); currentBlobUrl = null; }
+}
+
+function bumpPlaybackGeneration() {
+    playbackGeneration += 1;
+    flushAACQueue();
+    assistantResponding = false;
 }
 
 function onAudioComplete() {
@@ -893,24 +1088,30 @@ function updateStreamingResponse(text) {
 }
 
 function beginAssistantTurn() {
+    bumpPlaybackGeneration();
     streamingText = '';
     currentResponseElement = null;
-    flushAACQueue();
 }
 
 // ========== WebSocket ==========
 
 function connect() {
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+    const apiKey = resolveApiKey();
+    if (!apiKey) {
+        showAuthGate(
+            'This page has no sign-in. Open the /k/ link and stay on that address.'
+        );
+        return;
+    }
+    hideAuthGate();
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const basePath = location.pathname.replace(/\/$/, '');
-    const wsPath = basePath ? `${basePath}/ws` : '/ws';
+    const onVoiceMount = location.pathname === '/voice' || location.pathname.startsWith('/voice/');
+    const wsPath = onVoiceMount ? '/voice/ws' : '/ws';
     const params = new URLSearchParams();
-    const sessionId = getSessionId();
-    params.set('session_id', sessionId);
+    params.set('session_id', getSessionId());
     params.set('client_id', getClientId());
-    const apiKey = new URLSearchParams(location.search).get('api_key') || localStorage.getItem('openclaw_api_key') || '';
-    if (apiKey) params.set('api_key', apiKey);
+    params.set('api_key', apiKey);
     ws = new WebSocket(`${protocol}//${location.host}${wsPath}?${params}`);
 
     ws.onopen = () => {
@@ -936,8 +1137,16 @@ function connect() {
         }
     };
     ws.onclose = (e) => {
-        if ([4001,4002,4003].includes(e.code)) {
+        if ([4001, 4002, 4003].includes(e.code)) {
             setStatus('❌ ' + (e.reason || 'Connection refused'));
+            if (e.code === 4002) clearStoredApiKey();
+            if (e.code === 4001 || e.code === 4002) {
+                showAuthGate(
+                    e.code === 4002
+                        ? 'That API key was rejected. Paste a valid voice API key below.'
+                        : 'API key required. Open the /k/ link, or paste your key below.'
+                );
+            }
         } else {
             if (backgroundTaskPending) {
                 setStatus("Researching in background — reconnecting...", 'thinking');
@@ -1038,7 +1247,7 @@ function handleMessage(msg) {
             updateStreamingResponse(streamingText);
             break;
         case 'audio_aac':
-            queueAAC(msg.data, msg.mime);
+            queueAAC(msg.data, msg.mime, playbackGeneration);
             break;
         case 'response_complete':
             if (currentResponseElement) {
@@ -1048,8 +1257,8 @@ function handleMessage(msg) {
             if (!aacPlaying && aacQueue.length === 0) onAudioComplete();
             break;
         case 'tts_cancelled':
-            flushAACQueue();
-            assistantResponding = false;
+            bumpPlaybackGeneration();
+            setStatus(continuousMode ? 'Ready — tap mic to start' : 'Ready');
             break;
         case 'response_text':
             addTranscript('AI', msg.text, 'assistant');
@@ -1181,6 +1390,8 @@ let recordingStartedAt = 0;
 
 async function startRecording(fromContinuousRestart) {
     if (isRecording) return;
+    if (startRecordingPromise) return startRecordingPromise;
+
     _fromContinuousRestart = !!fromContinuousRestart;
     if (!_fromContinuousRestart) {
         // User manually started listening — clear any prior explicit pause
@@ -1188,87 +1399,128 @@ async function startRecording(fromContinuousRestart) {
         userPausedContinuous = false;
     }
 
-    if (!mediaStream) {
-        const ok = await requestMic();
-        if (!ok) return;
-    }
+    startRecordingPromise = (async () => {
+        try {
+            awaitingServerTurn = false;
 
-    warmUpPlayer();
-    localFinalTranscript = '';
-    localInterimTranscript = '';
-    clearPreview();
-
-    if (!audioContext || audioContext.state === 'closed') {
-        const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
-        audioContext = isSafariLike ? new AudioContextCtor() : new AudioContextCtor({ sampleRate: 16000 });
-        audioContext.onstatechange = () => {
-            if (
-                isRecording
-                && audioContext
-                && (audioContext.state === 'suspended' || audioContext.state === 'interrupted')
-            ) {
-                audioContext.resume().catch(() => {});
+            if (!mediaStream) {
+                const ok = await requestMic();
+                if (!ok) return;
             }
-        };
-    }
-    if (audioContext.state === 'suspended') await audioContext.resume();
-    audioSource = audioContext.createMediaStreamSource(mediaStream);
-    micAnalyser = audioContext.createAnalyser();
-    micAnalyser.fftSize = 512;
-    audioProcessor = audioContext.createScriptProcessor(4096, 1, 1);
-    silentGain = audioContext.createGain();
-    silentGain.gain.value = 0;
 
-    lastSoundTime = Date.now();
-    recordingStartedAt = Date.now();
-    heardSpeech = false;
-    audioProcessor.onaudioprocess = (e) => {
-        if (!isRecording) return;
-        const data = e.inputBuffer.getChannelData(0);
-        if (waveState !== 'listening') setWaveState('listening');
-        micEnergy = data.reduce((s, v) => s + Math.abs(v), 0) / data.length;
-        updateWaveTargetsFromMic(data);
+            // Hold released while getUserMedia was in flight — abort cleanly.
+            if (!continuousMode && !_fromContinuousRestart && !pressActive) {
+                if (isIOS) releaseMic();
+                return;
+            }
 
-        // Always buffer audio on the server so we can fall back when browser STT is empty.
-        if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'audio', data: float32ToBase64(data) }));
+            warmUpPlayer();
+            localFinalTranscript = '';
+            localInterimTranscript = '';
+            clearPreview();
+
+            if (!audioContext || audioContext.state === 'closed') {
+                const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+                audioContext = isSafariLike ? new AudioContextCtor() : new AudioContextCtor({ sampleRate: 16000 });
+                audioContext.onstatechange = () => {
+                    if (
+                        isRecording
+                        && audioContext
+                        && (audioContext.state === 'suspended' || audioContext.state === 'interrupted')
+                    ) {
+                        audioContext.resume().catch(() => {});
+                    }
+                };
+            }
+            if (audioContext.state === 'suspended') await audioContext.resume();
+
+            if (!continuousMode && !_fromContinuousRestart && !pressActive) {
+                if (audioContext && audioContext.state !== 'closed') {
+                    try { audioContext.close(); } catch {}
+                    audioContext = null;
+                }
+                if (isIOS) releaseMic();
+                return;
+            }
+
+            audioSource = audioContext.createMediaStreamSource(mediaStream);
+            micAnalyser = audioContext.createAnalyser();
+            micAnalyser.fftSize = 512;
+            audioProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+            silentGain = audioContext.createGain();
+            silentGain.gain.value = 0;
+
+            lastSoundTime = Date.now();
+            recordingStartedAt = Date.now();
+            heardSpeech = false;
+            audioProcessor.onaudioprocess = (e) => {
+                if (!isRecording) return;
+                const data = e.inputBuffer.getChannelData(0);
+                if (waveState !== 'listening') setWaveState('listening');
+                micEnergy = data.reduce((s, v) => s + Math.abs(v), 0) / data.length;
+                updateWaveTargetsFromMic(data);
+
+                // Always buffer audio on the server so we can fall back when browser STT is empty.
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: 'audio', data: float32ToBase64(data) }));
+                }
+
+                // Continuous-mode endpointing is server-owned. The client streams
+                // uninterrupted audio until it receives turn_committed.
+            };
+
+            audioSource.connect(audioProcessor);
+            audioSource.connect(micAnalyser);
+            // Safari needs ScriptProcessor connected to the graph, but not audible.
+            audioProcessor.connect(silentGain);
+            silentGain.connect(audioContext.destination);
+
+            if (!continuousMode && !_fromContinuousRestart && !pressActive) {
+                if (audioProcessor) { audioProcessor.disconnect(); audioProcessor = null; }
+                if (silentGain) { silentGain.disconnect(); silentGain = null; }
+                if (audioSource) { audioSource.disconnect(); audioSource = null; }
+                if (audioContext) { audioContext.close(); audioContext = null; }
+                stopMicVisualLoop();
+                if (isIOS) releaseMic();
+                return;
+            }
+
+            isRecording = true;
+            setWaveState('listening');
+            startMicVisualLoop();
+            voiceBtn.classList.add('listening');
+            voiceBtn.textContent = '🎙️ Listening...';
+            // Browser STT path does not emit server "listening_started", so set
+            // listening status locally to drive the input waveform state.
+            setStatus(continuousMode ? '🎙️ Listening (continuous)...' : '🎙️ Listening...', 'active');
+            playTone();
+
+            if (useBrowserSTT && !continuousMode) {
+                setupRecognition();
+                if (recognition) try { recognition.start(); } catch {}
+            }
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'start_listening',
+                    sample_rate: audioContext ? audioContext.sampleRate : 16000,
+                    mode: continuousMode ? 'continuous' : 'push_to_talk',
+                    client_id: getClientId(),
+                }));
+            }
+        } finally {
+            startRecordingPromise = null;
         }
+    })();
 
-        // Continuous-mode endpointing is server-owned. The client streams
-        // uninterrupted audio until it receives turn_committed.
-    };
-
-    audioSource.connect(audioProcessor);
-    audioSource.connect(micAnalyser);
-    // Safari needs ScriptProcessor connected to the graph, but not audible.
-    audioProcessor.connect(silentGain);
-    silentGain.connect(audioContext.destination);
-
-    isRecording = true;
-    setWaveState('listening');
-    startMicVisualLoop();
-    voiceBtn.classList.add('listening');
-    voiceBtn.textContent = '🎙️ Listening...';
-    // Browser STT path does not emit server "listening_started", so set
-    // listening status locally to drive the input waveform state.
-    setStatus(continuousMode ? '🎙️ Listening (continuous)...' : '🎙️ Listening...', 'active');
-    playTone();
-
-    if (useBrowserSTT && !continuousMode) {
-        setupRecognition();
-        if (recognition) try { recognition.start(); } catch {}
-    }
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-            type: 'start_listening',
-            sample_rate: audioContext ? audioContext.sampleRate : 16000,
-            mode: continuousMode ? 'continuous' : 'push_to_talk',
-            client_id: getClientId(),
-        }));
-    }
+    return startRecordingPromise;
 }
 
 async function stopRecording(playSignal = true, userInitiated = false, submit = true) {
+    // Finish any in-flight start so touchend cannot lose the stop against a
+    // still-pending getUserMedia / AudioContext resume.
+    if (startRecordingPromise) {
+        try { await startRecordingPromise; } catch {}
+    }
     if (!isRecording) return;
     isRecording = false;
     if (userInitiated && continuousMode) {
@@ -1330,6 +1582,8 @@ async function stopRecording(playSignal = true, userInitiated = false, submit = 
             setStatus('Transcribing...', 'thinking');
             ws.send(JSON.stringify({ type: 'stop_listening' }));
         }
+    } else if (!submit && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'cancel_listening' }));
     }
 
     if (playSignal) playTone();
@@ -1342,8 +1596,8 @@ function hasActiveResponse() {
 async function interruptResponse() {
     if (!hasActiveResponse()) return false;
     warmUpPlayer();
-    flushAACQueue();
-    assistantResponding = false;
+    bumpPlaybackGeneration();
+    awaitingServerTurn = false;
     if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'interrupt' }));
     }
@@ -1365,50 +1619,68 @@ micPermBtn.addEventListener('click', async () => {
     if (isIOS) releaseMic();
 });
 
+async function beginPressInteraction() {
+    pressActive = true;
+    warmUpPlayer();
+    if (hasActiveResponse()) {
+        await interruptResponse();
+        // Hold-to-talk barge-in: if the finger is still down, keep going into
+        // a new listen rather than requiring a second press.
+        if (!pressActive) return;
+        if (continuousMode) {
+            // interruptResponse already re-armed continuous listening
+            return;
+        }
+    }
+    if (continuousMode) {
+        if (isRecording) await stopRecording(true, true);
+        else await startRecording();
+        return;
+    }
+    await startRecording();
+    // Released during mic acquire — stop now that start finished (or aborted).
+    if (!pressActive && isRecording) {
+        await stopRecording(false);
+    }
+}
+
+async function endPressInteraction() {
+    pressActive = false;
+    if (!continuousMode) await stopRecording(false);
+}
+
 // Hold-to-talk (mouse) + click-to-toggle in continuous mode
 let handledByTouch = false;
 voiceBtn.addEventListener('mousedown', (e) => {
     if (handledByTouch) return;
     if (e.button !== 0) return;
-    if (hasActiveResponse()) {
-        interruptResponse();
-        return;
-    }
-    if (continuousMode) {
-        if (isRecording) stopRecording(true, true);
-        else startRecording();
-        return;
-    }
-    startRecording();
+    beginPressInteraction();
 });
 voiceBtn.addEventListener('mouseup', () => {
     if (handledByTouch) return;
-    if (!continuousMode) stopRecording(false);
+    endPressInteraction();
 });
 voiceBtn.addEventListener('mouseleave', () => {
     if (handledByTouch) return;
-    if (!continuousMode && isRecording) stopRecording(false);
+    if (!continuousMode && (isRecording || startRecordingPromise || pressActive)) {
+        endPressInteraction();
+    }
 });
 
 // Hold-to-talk (touch — iOS) + tap-to-toggle in continuous mode
 voiceBtn.addEventListener('touchstart', (e) => {
     e.preventDefault();
     handledByTouch = true;
-    warmUpPlayer();
-    if (hasActiveResponse()) {
-        interruptResponse();
-        return;
-    }
-    if (continuousMode) {
-        if (isRecording) stopRecording(true, true);
-        else startRecording();
-        return;
-    }
-    startRecording();
+    beginPressInteraction();
 }, { passive: false });
 voiceBtn.addEventListener('touchend', (e) => {
     e.preventDefault();
-    if (!continuousMode) stopRecording(false);
+    endPressInteraction();
+    setTimeout(() => { handledByTouch = false; }, 120);
+}, { passive: false });
+voiceBtn.addEventListener('touchcancel', (e) => {
+    e.preventDefault();
+    endPressInteraction();
     setTimeout(() => { handledByTouch = false; }, 120);
 }, { passive: false });
 
@@ -1416,14 +1688,37 @@ voiceBtn.addEventListener('touchend', (e) => {
 document.addEventListener('keydown', (e) => {
     if (e.code === 'Space' && !e.repeat && document.activeElement?.tagName !== 'INPUT') {
         e.preventDefault();
-        if (hasActiveResponse()) interruptResponse();
-        else if (isRecording) stopRecording(true, true);
-        else startRecording();
+        pressActive = true;
+        beginPressInteraction();
+    }
+});
+document.addEventListener('keyup', (e) => {
+    if (e.code === 'Space' && document.activeElement?.tagName !== 'INPUT') {
+        e.preventDefault();
+        endPressInteraction();
     }
 });
 
 // Clear / New Chat
 clearBtn.addEventListener('click', () => { transcriptEl.innerHTML = ''; persistTranscript(); });
+authKeyBtn.addEventListener('click', () => {
+    const key = (authKeyInput.value || '').trim();
+    if (!key) {
+        authGateMsg.textContent = 'Paste an API key first (starts with ocv_).';
+        return;
+    }
+    persistApiKey(key);
+    authKeyInput.value = '';
+    hideAuthGate();
+    errorEl.textContent = '';
+    connect();
+});
+authKeyInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+        e.preventDefault();
+        authKeyBtn.click();
+    }
+});
 newChatBtn.addEventListener('click', () => {
     try { localStorage.removeItem(backgroundPendingKey()); } catch {}
     backgroundTaskPending = false;
@@ -1436,7 +1731,9 @@ newChatBtn.addEventListener('click', () => {
     transcriptEl.innerHTML = '';
     streamingText = '';
     currentResponseElement = null;
-    flushAACQueue();
+    bumpPlaybackGeneration();
+    awaitingServerTurn = false;
+    pressActive = false;
     persistTranscript();
     try { if (ws) { ws.onclose = null; ws.close(); } } catch {}
     ws = null;

@@ -2,9 +2,9 @@ name: Tests
 
 on:
   push:
-    branches: [main]
+    branches: [public-safe-voice-fork]
   pull_request:
-    branches: [main]
+    branches: [public-safe-voice-fork]
 
 jobs:
   test:
